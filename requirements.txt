@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+qdrant-client
+boto3
+redis
+onnxruntime-openvino
+opencv-python-headless
+numpy
+pillow
+python-multipart
+aiohttp
+python-dotenv
