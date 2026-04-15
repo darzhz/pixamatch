@@ -14,7 +14,7 @@ class SearchEngine:
         self.processor = processor
         self.db = db
         self.storage = storage
-        self.threshold = float(os.getenv("MATCH_THRESHOLD", 0.42))
+        self.threshold = float(os.getenv("MATCH_THRESHOLD", 0.38))
 
     @timeit
     def normalize_selfie(self, image_path):

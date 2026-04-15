@@ -18,7 +18,7 @@ Pixamatch is designed to handle bulk image ingestion (up to 1,000 images per bat
     *   **Detection**: SCRFD (ONNX INT8).
     *   **Quality Gate**: 
         *   Size: ≥ 40x40px.
-        *   Blur: Laplacian variance > 80.
+        *   Blur: Laplacian variance > 40.
         *   **Pose**: Yaw absolute < 70° (via 5-point landmarks).
     *   **Vectorization**: MobileFaceNet (ONNX FP16). 
         *   `front`: Standard crop.
@@ -33,7 +33,7 @@ Pixamatch is designed to handle bulk image ingestion (up to 1,000 images per bat
     *   **Query**: Selfie capture generates 3 query vectors (q_front, q_profile, q_low_light).
     *   **Coarse Pass**: Union of Top-50 from each index. `hnsw_ef=64`.
     *   **Fine Pass**: Weighted score fusion (0.5/0.3/0.2). `hnsw_ef=128`.
-    *   **Threshold**: `MATCH_THRESHOLD = 0.42`. No results returned below this.
+    *   **Threshold**: `MATCH_THRESHOLD = 0.38`. No results returned below this.
 
 ---
 

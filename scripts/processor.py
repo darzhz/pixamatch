@@ -36,7 +36,7 @@ class FaceProcessor:
         
         gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
         blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if blur_score < 80:
+        if blur_score < 40:
             return False, f"too_blurry_{blur_score:.1f}"
 
         # Pose Gate (Yaw < 70)
