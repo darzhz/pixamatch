@@ -4,7 +4,7 @@ import axios from 'axios';
 import { Camera, Upload, Sparkles, Download, Share2, X, AlertCircle } from 'lucide-react';
 import SelfieCapture from './SelfieCapture';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = '/api';
 
 export default function Viewer() {
   const { basket_id } = useParams();

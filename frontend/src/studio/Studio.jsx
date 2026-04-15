@@ -4,7 +4,6 @@ import { useDropzone } from 'react-dropzone';
 import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw, Loader2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function Studio() {
   const [baskets, setBaskets] = useState([]);
@@ -16,7 +15,7 @@ export default function Studio() {
   useEffect(() => {
     const fetchBaskets = async () => {
       try {
-        const res = await axios.get(`${API_BASE}/baskets`);
+        const res = await axios.get(`/api/baskets`);
         setBaskets(res.data.baskets);
       } catch (e) {
         console.error("Error fetching baskets", e);
@@ -29,7 +28,7 @@ export default function Studio() {
     const name = prompt("Basket Name:");
     if (!name) return;
     try {
-      const res = await axios.post(`${API_BASE}/baskets`, { name });
+      const res = await axios.post(`/api/baskets`, { name });
       const newBasket = { ...res.data, name };
       setBaskets([...baskets, newBasket]);
       setActiveBasket(newBasket);
@@ -87,7 +86,7 @@ export default function Studio() {
         const formData = new FormData();
         currentBatch.forEach(file => formData.append('images', file));
         try {
-          await axios.post(`${API_BASE}/baskets/${activeBasket.basket_id}/images`, formData);
+          await axios.post(`/api/baskets/${activeBasket.basket_id}/images`, formData);
         } catch (e) {
           console.error("Upload error", e);
         }
@@ -103,7 +102,7 @@ export default function Studio() {
   useEffect(() => {
     let eventSource;
     if (activeBasket) {
-      eventSource = new EventSource(`${API_BASE}/baskets/${activeBasket.basket_id}/progress/events`);
+      eventSource = new EventSource(`/api/baskets/${activeBasket.basket_id}/progress/events`);
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -130,7 +129,7 @@ export default function Studio() {
 
   const selectBasket = async (basket) => {
     try {
-      const res = await axios.get(`${API_BASE}/baskets/${basket.id}/info`);
+      const res = await axios.get(`/api/baskets/${basket.id}/info`);
       // Mix core basket ID/URL with detailed info
       setActiveBasket({
         basket_id: basket.id,

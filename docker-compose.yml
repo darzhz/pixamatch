@@ -8,8 +8,8 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template
-      - certbot_etc:/etc/letsencrypt
-      - certbot_var:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
     environment:
       - DOMAIN=${DOMAIN}
     restart: always
@@ -20,8 +20,8 @@ services:
   certbot:
     image: certbot/certbot
     volumes:
-      - certbot_etc:/etc/letsencrypt
-      - certbot_var:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 
   qdrant:
@@ -90,5 +90,3 @@ services:
 volumes:
   qdrant_storage:
   minio_storage:
-  certbot_etc:
-  certbot_var:
