@@ -7,7 +7,8 @@ class StorageClient:
                  endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"), 
                  access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"), 
                  secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"), 
-                 bucket=os.getenv("MINIO_BUCKET", "pixamatch")):
+                 bucket=os.getenv("MINIO_BUCKET", "pixamatch"),
+                 public_endpoint=os.getenv("MINIO_PUBLIC_ENDPOINT", None)):
         self.s3 = boto3.client(
             "s3",
             endpoint_url=f"http://{endpoint}",
@@ -17,6 +18,9 @@ class StorageClient:
             region_name="us-east-1" # MinIO default
         )
         self.bucket = bucket
+        # Used to rewrite presigned URLs to a public-facing host
+        self.internal_endpoint = f"http://{endpoint}"
+        self.public_endpoint = f"http://{public_endpoint}" if public_endpoint else self.internal_endpoint
         self._ensure_bucket()
 
     def _ensure_bucket(self):
@@ -34,11 +38,15 @@ class StorageClient:
         return key
 
     def get_signed_url(self, key, expires_in=3600):
-        return self.s3.generate_presigned_url(
+        url = self.s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=expires_in
         )
+        # Rewrite internal Docker hostname to public-facing host
+        if self.public_endpoint != self.internal_endpoint:
+            url = url.replace(self.internal_endpoint, self.public_endpoint)
+        return url
 
 if __name__ == "__main__":
     # Quick test
