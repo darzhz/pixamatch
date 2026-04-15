@@ -34,7 +34,7 @@ processor = FaceProcessor(SCRFD_MODEL, MFNET_MODEL)
 db = DatabaseClient()
 storage = StorageClient()
 search_engine = SearchEngine(processor, db, storage)
-r = redis.Redis(host="localhost", decode_responses=True)
+r = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), decode_responses=True)
 meta_db = MetadataDB()
 
 # Models

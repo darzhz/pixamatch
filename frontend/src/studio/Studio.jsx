@@ -4,7 +4,7 @@ import { useDropzone } from 'react-dropzone';
 import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function Studio() {
   const [baskets, setBaskets] = useState([]);

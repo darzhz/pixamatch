@@ -1,9 +1,10 @@
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import uuid
+import os
 
 class DatabaseClient:
-    def __init__(self, host="localhost", port=6333):
+    def __init__(self, host=os.getenv("QDRANT_HOST", "localhost"), port=int(os.getenv("QDRANT_PORT", 6333))):
         self.client = QdrantClient(host=host, port=port)
         self.collection_name = "faces"
         self._ensure_collection()

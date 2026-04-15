@@ -11,7 +11,7 @@ import json
 from PIL import Image
 
 class FaceProcessor:
-    def __init__(self, scrfd_path: str, mfnet_path: str, redis_host="localhost"):
+    def __init__(self, scrfd_path: str, mfnet_path: str, redis_host=os.getenv("REDIS_HOST", "localhost")):
         debug_log(f"Initializing FaceProcessor with {scrfd_path} and {mfnet_path}...")
         self.detector = SCRFD.from_path(scrfd_path)
         

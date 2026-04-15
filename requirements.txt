@@ -5,8 +5,9 @@ pydantic-settings
 qdrant-client
 boto3
 redis
-onnxruntime-openvino
+onnxruntime
 opencv-python-headless
+scrfd
 numpy
 pillow
 python-multipart

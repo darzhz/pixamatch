@@ -3,7 +3,11 @@ from botocore.client import Config
 import os
 
 class StorageClient:
-    def __init__(self, endpoint="localhost:9000", access_key="minioadmin", secret_key="minioadmin", bucket="pixamatch"):
+    def __init__(self, 
+                 endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"), 
+                 access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"), 
+                 secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"), 
+                 bucket=os.getenv("MINIO_BUCKET", "pixamatch")):
         self.s3 = boto3.client(
             "s3",
             endpoint_url=f"http://{endpoint}",
