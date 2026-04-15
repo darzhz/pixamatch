@@ -1,19 +1,36 @@
 version: '3.8'
 
 services:
+  nginx:
+    image: nginx:stable-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template
+      - certbot_etc:/etc/letsencrypt
+      - certbot_var:/var/www/certbot
+    environment:
+      - DOMAIN=${DOMAIN}
+    restart: always
+    depends_on:
+      - frontend
+      - backend
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - certbot_etc:/etc/letsencrypt
+      - certbot_var:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
   qdrant:
     image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
 
   minio:
     image: minio/minio:latest
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -29,8 +46,6 @@ services:
 
   redis:
     image: redis:alpine
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -42,8 +57,6 @@ services:
     build:
       context: .
       dockerfile: backend.Dockerfile
-    ports:
-      - "8000:8000"
     environment:
       - REDIS_HOST=redis
       - QDRANT_HOST=qdrant
@@ -69,13 +82,13 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "80:80"
     environment:
-      - VITE_API_URL=${VITE_API_URL}
+      - VITE_API_URL=${VITE_API_URL:-https://${DOMAIN}/api}
     depends_on:
       - backend
 
 volumes:
   qdrant_storage:
   minio_storage:
+  certbot_etc:
+  certbot_var:

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useDropzone } from 'react-dropzone';
-import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw } from 'lucide-react';
+import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw, Loader2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -11,6 +11,7 @@ export default function Studio() {
   const [activeBasket, setActiveBasket] = useState(null);
   const [progress, setProgress] = useState(null);
   const [showQR, setShowQR] = useState(false);
+  const [clientProgress, setClientProgress] = useState({ done: 0, total: 0, status: 'idle' });
 
   useEffect(() => {
     const fetchBaskets = async () => {
@@ -37,32 +38,88 @@ export default function Studio() {
     }
   };
 
+  const processImage = async (file) => {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const maxSize = 640;
+      let width = bitmap.width;
+      let height = bitmap.height;
+
+      if (width > height) {
+        if (width > maxSize) {
+          height *= maxSize / width;
+          width = maxSize;
+        }
+      } else {
+        if (height > maxSize) {
+          width *= maxSize / height;
+          height = maxSize;
+        }
+      }
+
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      const blob = await canvas.convertToBlob({ type: 'image/webp', quality: 0.7 });
+      return new File([blob], file.name.replace(/\.[^/.]+$/, "") + ".webp", { type: 'image/webp' });
+    } catch (err) {
+      console.error("Compression error", err);
+      return file; // fallback to original
+    }
+  };
+
   const onDrop = async (acceptedFiles) => {
     if (!activeBasket) return;
-    const formData = new FormData();
-    acceptedFiles.forEach(file => formData.append('images', file));
-    try {
-      await axios.post(`${API_BASE}/baskets/${activeBasket.basket_id}/images`, formData);
-    } catch (e) {
-      alert("Error uploading images: " + e.message);
+    setClientProgress({ done: 0, total: acceptedFiles.length, status: 'processing' });
+    
+    const uploadBatchSize = 20;
+    const concurrency = 3;
+    let currentBatch = [];
+    
+    for (let i = 0; i < acceptedFiles.length; i += concurrency) {
+      const chunk = acceptedFiles.slice(i, i + concurrency);
+      const results = await Promise.all(chunk.map(processImage));
+      currentBatch.push(...results);
+      
+      setClientProgress(prev => ({ ...prev, done: Math.min(i + concurrency, acceptedFiles.length) }));
+
+      if (currentBatch.length >= uploadBatchSize || i + concurrency >= acceptedFiles.length) {
+        const formData = new FormData();
+        currentBatch.forEach(file => formData.append('images', file));
+        try {
+          await axios.post(`${API_BASE}/baskets/${activeBasket.basket_id}/images`, formData);
+        } catch (e) {
+          console.error("Upload error", e);
+        }
+        currentBatch = []; // Clear memory immediately
+      }
     }
+    
+    setClientProgress({ done: 0, total: 0, status: 'idle' });
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop });
 
   useEffect(() => {
-    let interval;
+    let eventSource;
     if (activeBasket) {
-      interval = setInterval(async () => {
+      eventSource = new EventSource(`${API_BASE}/baskets/${activeBasket.basket_id}/progress/events`);
+      eventSource.onmessage = (event) => {
         try {
-          const res = await axios.get(`${API_BASE}/baskets/${activeBasket.basket_id}/progress`);
-          setProgress(res.data);
+          const data = JSON.parse(event.data);
+          setProgress(data);
         } catch (e) {
-          console.error("Progress fetch error", e);
+          console.error("Error parsing progress event", e);
         }
-      }, 2000);
+      };
+      eventSource.onerror = (e) => {
+        console.error("EventSource failed", e);
+        eventSource.close();
+      };
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (eventSource) eventSource.close();
+    };
   }, [activeBasket]);
 
   const copyLink = () => {
@@ -146,16 +203,36 @@ export default function Studio() {
                 <Upload className="text-purple-600" size={32} />
               </div>
               <p className="text-xl font-bold">Drop images here or browse files</p>
-              <p className="text-gray-500 mt-2">JPG, PNG, HEIC — up to 50 photos at once</p>
+              <p className="text-gray-500 mt-2">JPG, PNG, WEBP — up to 1000 photos per session</p>
             </div>
 
-            {/* Progress */}
+            {/* Client-Side Progress (Compression/Upload) */}
+            {clientProgress.status !== 'idle' && (
+              <div className="mt-8 bg-purple-600 text-white p-6 rounded-2xl shadow-lg animate-in slide-in-from-bottom-4 duration-300">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="animate-spin" size={24} />
+                    <span className="font-bold text-lg capitalize">{clientProgress.status}...</span>
+                  </div>
+                  <span className="font-black">{Math.round((clientProgress.done / clientProgress.total) * 100)}%</span>
+                </div>
+                <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="bg-white h-full transition-all duration-300" 
+                    style={{ width: `${(clientProgress.done / clientProgress.total) * 100}%` }}
+                  ></div>
+                </div>
+                <p className="text-sm mt-3 opacity-90">Processing {clientProgress.done} of {clientProgress.total} files locally</p>
+              </div>
+            )}
+
+            {/* Ingestion Progress */}
             {progress && progress.total > 0 && (
               <div className="mt-8 bg-white p-8 rounded-2xl shadow-lg border border-gray-100">
                 <div className="flex justify-between items-end mb-4">
                   <div>
-                    <h3 className="font-bold text-lg">Ingestion Status</h3>
-                    <p className="text-gray-500 text-sm">{progress.done} of {progress.total} images processed</p>
+                    <h3 className="font-bold text-lg">Server Ingestion</h3>
+                    <p className="text-gray-500 text-sm">{progress.done} of {progress.total} images indexed</p>
                   </div>
                   <span className="text-2xl font-black text-purple-600">{Math.round((progress.done / progress.total) * 100)}%</span>
                 </div>

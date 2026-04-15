@@ -29,7 +29,7 @@ class FaceProcessor:
         self.db = DatabaseClient()
         self.redis = redis.Redis(host=redis_host, decode_responses=True)
 
-    def check_quality(self, face_crop):
+    def check_quality(self, face_crop, face_obj=None):
         h, w = face_crop.shape[:2]
         if h < 40 or w < 40:
             return False, "too_small"
@@ -38,7 +38,19 @@ class FaceProcessor:
         blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
         if blur_score < 80:
             return False, f"too_blurry_{blur_score:.1f}"
-        
+
+        # Pose Gate (Yaw < 70)
+        if face_obj and hasattr(face_obj, 'kps'):
+            kps = face_obj.kps
+            # Simple yaw estimation: (nose_x - left_eye_x) / (right_eye_x - left_eye_x)
+            # Center is ~0.5. Extreme yaw is < 0.15 or > 0.85.
+            lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
+            if abs(rex - lex) > 0:
+                ratio = (nx - lex) / (rex - lex)
+                yaw_score = abs(ratio - 0.5) * 200 # 0 to 100 roughly
+                if yaw_score > 70:
+                    return False, f"extreme_pose_{yaw_score:.1f}"
+
         return True, "ok"
 
     def get_embedding(self, face_crop):
@@ -53,12 +65,15 @@ class FaceProcessor:
         return net_out[0].tolist()
 
     def update_progress(self, basket_id, done, total, faces_indexed, failed):
-        self.redis.set(f"progress:{basket_id}", json.dumps({
+        data = json.dumps({
             "done": done,
             "total": total,
             "faces_indexed": faces_indexed,
             "failed": failed
-        }))
+        })
+        self.redis.set(f"progress:{basket_id}", data)
+        # Publish for real-time scaling
+        self.redis.publish(f"events:{basket_id}", data)
 
     @timeit
     def process_basket_images(self, basket_id, image_paths):
@@ -67,6 +82,9 @@ class FaceProcessor:
         failed = 0
         faces_indexed = 0
         debug_log(f"Processing basket {basket_id} with {total} images...")
+        
+        batch_faces = []
+        batch_size = 256 # Increased for throughput
         
         for path in image_paths:
             try:
@@ -80,6 +98,7 @@ class FaceProcessor:
                     continue
                 
                 h, w = img.shape[:2]
+                # Scale to 640 max dimension
                 scale = 640 / max(h, w)
                 img_resized = cv2.resize(img, (int(w * scale), int(h * scale)))
                 
@@ -88,7 +107,7 @@ class FaceProcessor:
                 pil_img = Image.fromarray(img_rgb)
                 
                 # Detection
-                faces = self.detector.detect(pil_img) # removed threshold=0.5 to use defaults if it causes issues
+                faces = self.detector.detect(pil_img)
                 debug_log(f"Detected {len(faces)} faces in {path}")
                 
                 # Storage original
@@ -98,7 +117,6 @@ class FaceProcessor:
                 
                 for i, face in enumerate(faces):
                     try:
-                        # Extract coordinates from Bbox object
                         x1 = int(face.bbox.upper_left.x)
                         y1 = int(face.bbox.upper_left.y)
                         x2 = int(face.bbox.lower_right.x)
@@ -106,38 +124,53 @@ class FaceProcessor:
                         bbox = [x1, y1, x2, y2]
                         
                         face_crop = img_resized[max(0, y1):y2, max(0, x1):x2]
-                        
                         if face_crop.size == 0: continue
                         
-                        ok, reason = self.check_quality(face_crop)
+                        ok, reason = self.check_quality(face_crop, face)
                         if not ok: 
                             debug_log(f"Face {i} in {path} rejected: {reason}")
                             continue
                         
                         # Triple embeddings
                         v_front = self.get_embedding(face_crop)
-                        v_profile = self.get_embedding(cv2.flip(face_crop, 1))
                         
+                        # Profile logic
+                        kps = face.kps
+                        lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
+                        ratio = (nx - lex) / (rex - lex) if abs(rex-lex) > 0 else 0.5
+                        is_profile = abs(ratio - 0.5) > 0.25 # Yaw > 25 deg approx
+                        
+                        if is_profile:
+                            v_profile = v_front # This is the profile
+                        else:
+                            # Frontend mirror augment for symmetry
+                            v_profile = self.get_embedding(cv2.flip(face_crop, 1))
+                        
+                        # Low light with specific CLAHE
                         lab = cv2.cvtColor(face_crop, cv2.COLOR_BGR2LAB)
                         l, a, b = cv2.split(lab)
-                        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
                         cl = clahe.apply(l)
                         limg = cv2.merge((cl,a,b))
                         face_low_light = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
                         v_low_light = self.get_embedding(face_low_light)
                         
-                        self.db.upsert_face(
-                            basket_id=basket_id,
-                            image_path=s3_key,
-                            vectors={
+                        batch_faces.append({
+                            "image_path": s3_key,
+                            "vectors": {
                                 "front": v_front,
                                 "profile": v_profile,
                                 "low_light": v_low_light
                             },
-                            bbox=bbox,
-                            quality_score=float(face.probability)
-                        )
+                            "bbox": bbox,
+                            "quality_score": float(face.probability)
+                        })
                         faces_indexed += 1
+                        
+                        if len(batch_faces) >= batch_size:
+                            self.db.upsert_faces_batch(basket_id, batch_faces)
+                            batch_faces = []
+                            
                     except Exception as fe:
                         debug_log(f"Error processing face {i}: {fe}")
                 
@@ -150,3 +183,8 @@ class FaceProcessor:
                 done += 1
                 failed += 1
                 self.update_progress(basket_id, done, total, faces_indexed, failed)
+
+        # Final batch
+        if batch_faces:
+            self.db.upsert_faces_batch(basket_id, batch_faces)
+            self.update_progress(basket_id, done, total, faces_indexed, failed)

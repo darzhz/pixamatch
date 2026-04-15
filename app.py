@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import uuid
@@ -7,35 +8,15 @@ import json
 import redis
 import os
 import shutil
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
 
 from scripts.processor import FaceProcessor
 from scripts.storage import StorageClient
 from scripts.database import DatabaseClient
 from scripts.search import SearchEngine
 from scripts.logger import debug_log, timeit
-
-app = FastAPI(title="Pixamatch API", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Shared Clients
-SCRFD_MODEL = "models/scrfd_2.5g_bnkps.onnx"
-MFNET_MODEL = "models/mobilefacenet.onnx"
-
 from scripts.metadata_db import MetadataDB
-
-debug_log("Starting Pixamatch API...")
-processor = FaceProcessor(SCRFD_MODEL, MFNET_MODEL)
-db = DatabaseClient()
-storage = StorageClient()
-search_engine = SearchEngine(processor, db, storage)
-r = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), decode_responses=True)
-meta_db = MetadataDB()
 
 # Models
 class BasketCreate(BaseModel):
@@ -63,50 +44,74 @@ class SearchResponse(BaseModel):
     no_match: bool = False
     reason: Optional[str] = None
 
-# Background Task
-def run_ingestion(basket_id: str, paths: List[str]):
-    debug_log(f"Starting background ingestion for basket {basket_id}...")
-    processor.process_basket_images(basket_id, paths)
+# Global Clients
+SCRFD_MODEL = "models/scrfd_2.5g_bnkps.onnx"
+MFNET_MODEL = "models/mobilefacenet.onnx"
+
+app = FastAPI(title="Pixamatch API", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+r = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), decode_responses=True)
+meta_db = MetadataDB()
+
+# Process Pool for CPU work
+executor = None
+worker_processor = None
+
+def init_worker():
+    global worker_processor
+    # Fork-safe initialization inside worker
+    worker_processor = FaceProcessor(SCRFD_MODEL, MFNET_MODEL)
+
+@app.on_event("startup")
+async def startup_event():
+    global executor
+    executor = ProcessPoolExecutor(max_workers=os.cpu_count(), initializer=init_worker)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if executor:
+        executor.shutdown()
+
+# Helper for Search (initialized in main process for search endpoint)
+# Note: Search is fast enough for async if not heavily loaded, 
+# or can also be offloaded if needed.
+main_processor = FaceProcessor(SCRFD_MODEL, MFNET_MODEL)
+db = DatabaseClient()
+storage = StorageClient()
+search_engine = SearchEngine(main_processor, db, storage)
+
+def run_ingestion_sync(basket_id: str, paths: List[str]):
+    debug_log(f"Worker starting ingestion for {basket_id}...")
+    worker_processor.process_basket_images(basket_id, paths)
     
-    # Final stats sync from Redis to SQLite
+    # Final stats sync
     data = r.get(f"progress:{basket_id}")
     if data:
         prog = json.loads(data)
         meta_db.update_stats(basket_id, prog["total"], prog["faces_indexed"])
     
-    # Cleanup temp uploads
     for p in paths:
-        if os.path.exists(p):
-            os.remove(p)
-    debug_log(f"Background ingestion finished for basket {basket_id}.")
+        if os.path.exists(p): os.remove(p)
+    debug_log(f"Worker finished ingestion for {basket_id}.")
 
 # Endpoints
 @app.post("/baskets", response_model=BasketResponse)
 async def create_basket(basket: BasketCreate):
-    debug_log(f"Creating basket: {basket.name}")
     basket_id = str(uuid.uuid4())
-    # Save to Redis for progress tracking (transient)
     r.set(f"basket:{basket_id}:name", basket.name)
-    # Save to SQLite for long-term persistence
     meta_db.create_basket(basket_id, basket.name)
     return {
-        "basket_id": basket_id,
-        "id": basket_id, # for frontend consistency
-        "name": basket.name,
+        "basket_id": basket_id, "id": basket_id, "name": basket.name,
         "share_url": f"http://localhost:5173/find/{basket_id}"
     }
 
-class BasketListResponse(BaseModel):
-    baskets: List[dict]
-
-@app.get("/baskets", response_model=BasketListResponse)
+@app.get("/baskets")
 async def list_baskets():
     return {"baskets": meta_db.list_baskets()}
 
 @app.post("/baskets/{basket_id}/images")
-async def upload_images(basket_id: str, background_tasks: BackgroundTasks, images: List[UploadFile] = File(...)):
-    debug_log(f"Uploading {len(images)} images to basket {basket_id}...")
-    # Save to temp disk first
+async def upload_images(basket_id: str, images: List[UploadFile] = File(...)):
     temp_dir = f"uploads/{basket_id}"
     os.makedirs(temp_dir, exist_ok=True)
     
@@ -117,15 +122,32 @@ async def upload_images(basket_id: str, background_tasks: BackgroundTasks, image
             shutil.copyfileobj(img.file, f)
         paths.append(path)
     
-    background_tasks.add_task(run_ingestion, basket_id, paths)
+    # Offload to ProcessPool
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(executor, run_ingestion_sync, basket_id, paths)
     return {"status": "Accepted", "count": len(images)}
 
 @app.get("/baskets/{basket_id}/progress")
 async def get_progress(basket_id: str):
     data = r.get(f"progress:{basket_id}")
-    if not data:
-        return {"done": 0, "total": 0, "faces_indexed": 0}
-    return json.loads(data)
+    return json.loads(data) if data else {"done": 0, "total": 0, "faces_indexed": 0}
+
+@app.get("/baskets/{basket_id}/progress/events")
+async def progress_events(basket_id: str):
+    async def event_generator():
+        pubsub = r.pubsub()
+        pubsub.subscribe(f"events:{basket_id}")
+        # Send initial state
+        initial = r.get(f"progress:{basket_id}")
+        if initial: yield f"data: {initial}\n\n"
+        
+        while True:
+            message = pubsub.get_message(ignore_subscribe_const=True)
+            if message:
+                yield f"data: {message['data']}\n\n"
+            await asyncio.sleep(1)
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/baskets/{basket_id}/info", response_model=BasketInfo)
 async def get_basket_info(basket_id: str):
@@ -134,7 +156,6 @@ async def get_basket_info(basket_id: str):
         raise HTTPException(status_code=404, detail="Basket not found")
         
     progress = r.get(f"progress:{basket_id}")
-    # If not in progress, use historical data from SQLite
     prog_data = json.loads(progress) if progress else {
         "done": info["image_count"], 
         "total": info["image_count"], 
@@ -149,24 +170,31 @@ async def get_basket_info(basket_id: str):
     }
 
 @app.post("/baskets/{basket_id}/search", response_model=SearchResponse)
-async def search_faces(basket_id: str, selfie: UploadFile = File(...)):
-    debug_log(f"Received search request for basket {basket_id}")
-    # Save selfie to temp
-    temp_path = f"uploads/selfie_{uuid.uuid4()}.jpg"
-    with open(temp_path, "wb") as f:
-        shutil.copyfileobj(selfie.file, f)
+async def search_faces(basket_id: str, front: UploadFile = File(...), left: Optional[UploadFile] = File(None), right: Optional[UploadFile] = File(None)):
+    temp_paths = {}
     
+    # Helper to save upload
+    async def save_upload(upload: UploadFile, prefix: str):
+        path = f"uploads/{prefix}_{uuid.uuid4()}.jpg"
+        with open(path, "wb") as f:
+            shutil.copyfileobj(upload.file, f)
+        return path
+
     try:
-        results = search_engine.search(basket_id, temp_path)
+        temp_paths["front"] = await save_upload(front, "front")
+        if left: temp_paths["left"] = await save_upload(left, "left")
+        if right: temp_paths["right"] = await save_upload(right, "right")
+        
+        # Search with multiple poses
+        results = search_engine.search(basket_id, temp_paths)
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        for p in temp_paths.values():
+            if os.path.exists(p): os.remove(p)
             
     return results
 
 @app.delete("/baskets/{basket_id}", status_code=204)
 async def delete_basket(basket_id: str):
-    debug_log(f"Deleting basket: {basket_id}")
     db.delete_basket(basket_id)
     meta_db.delete_basket(basket_id)
     r.delete(f"basket:{basket_id}:name")

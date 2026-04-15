@@ -21,27 +21,46 @@ class DatabaseClient:
                     "profile": models.VectorParams(size=128, distance=models.Distance.COSINE),
                     "low_light": models.VectorParams(size=128, distance=models.Distance.COSINE),
                 },
-                hnsw_config=models.HnswConfigDiff(m=16, ef_construct=100)
+                hnsw_config=models.HnswConfigDiff(m=16, ef_construct=100),
+                quantization_config=models.ScalarQuantization(
+                    scalar=models.ScalarQuantizationConfig(
+                        type=models.ScalarType.INT8,
+                        quantile=0.99,
+                        always_ram=True
+                    )
+                )
             )
 
     def upsert_face(self, basket_id, image_path, vectors, bbox, quality_score):
-        point_id = str(uuid.uuid4())
+        return self.upsert_faces_batch(basket_id, [{
+            "image_path": image_path,
+            "vectors": vectors,
+            "bbox": bbox,
+            "quality_score": quality_score
+        }])[0]
+
+    def upsert_faces_batch(self, basket_id, faces_data):
+        points = []
+        point_ids = []
+        for face in faces_data:
+            point_id = str(uuid.uuid4())
+            points.append(models.PointStruct(
+                id=point_id,
+                vector=face["vectors"],
+                payload={
+                    "basket_id": basket_id,
+                    "image_path": face["image_path"],
+                    "face_bbox": face["bbox"],
+                    "quality_score": face["quality_score"]
+                }
+            ))
+            point_ids.append(point_id)
+        
         self.client.upsert(
             collection_name=self.collection_name,
-            points=[
-                models.PointStruct(
-                    id=point_id,
-                    vector=vectors, # dict with front, profile, low_light
-                    payload={
-                        "basket_id": basket_id,
-                        "image_path": image_path,
-                        "face_bbox": bbox,
-                        "quality_score": quality_score
-                    }
-                )
-            ]
+            points=points
         )
-        return point_id
+        return point_ids
 
     def search_faces(self, vector_name, query_vector, basket_id, top=50):
         results = self.client.query_points(
