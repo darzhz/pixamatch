@@ -18,9 +18,21 @@ class StorageClient:
             region_name="us-east-1" # MinIO default
         )
         self.bucket = bucket
-        # Used to rewrite presigned URLs to a public-facing host
+        # self.s3 is for internal operations (uploads, etc.)
         self.internal_endpoint = f"http://{endpoint}"
-        self.public_endpoint = f"http://{public_endpoint}" if public_endpoint else self.internal_endpoint
+        
+        # self.signer is specifically for generating presigned URLs with the public hostname
+        # so that the Host header in the signature matches what the browser hits.
+        public_url = f"http://{public_endpoint}" if public_endpoint else self.internal_endpoint
+        self.signer = boto3.client(
+            "s3",
+            endpoint_url=public_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4"),
+            region_name="us-east-1"
+        )
+        
         self._ensure_bucket()
 
     def _ensure_bucket(self):
@@ -38,15 +50,12 @@ class StorageClient:
         return key
 
     def get_signed_url(self, key, expires_in=3600):
-        url = self.s3.generate_presigned_url(
+        # Generate URL using the signer client which has the public endpoint_url
+        return self.signer.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=expires_in
         )
-        # Rewrite internal Docker hostname to public-facing host
-        if self.public_endpoint != self.internal_endpoint:
-            url = url.replace(self.internal_endpoint, self.public_endpoint)
-        return url
 
 if __name__ == "__main__":
     # Quick test
