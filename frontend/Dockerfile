@@ -8,7 +8,8 @@ RUN npm install
 
 COPY . .
 
-ARG VITE_API_URL=http://localhost:8000
+# Build with a placeholder — replaced at runtime by docker-entrypoint.sh
+ARG VITE_API_URL=__VITE_API_URL_PLACEHOLDER__
 ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build
@@ -27,6 +28,9 @@ RUN echo 'server { \
     } \
 }' > /etc/nginx/conf.d/default.conf
 
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 EXPOSE 80
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["/docker-entrypoint.sh"]
