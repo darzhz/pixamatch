@@ -30,9 +30,10 @@ server {
     }
 
     location /api/storage/ {
-    proxy_pass http://minio:9000/;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
+        rewrite ^/api/storage/(.*) /$1 break;
+        proxy_pass http://minio:9000;
+        proxy_set_header Host $host; # 復原為 $host
+        proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /api/ {
