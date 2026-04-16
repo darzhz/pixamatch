@@ -22,7 +22,7 @@ To prevent "garbage-in, garbage-out," every face detected by SCRFD must pass the
 
 Size: ≥ 40×40 px area.
 
-Clarity: Laplacian variance > 80 (rejects motion blur).
+Clarity: Laplacian variance > 40 (rejects motion blur).
 
 Pose: Yaw < 70° (rejects extreme "ear-only" side profiles).
 
@@ -63,7 +63,7 @@ Stage 1 (Coarse):
 Stage 2 (Fine):
   For each candidate in candidate_set:
     score = w_f * sim(front) + w_p * sim(profile) + w_l * sim(low_light)
-  Sort by score, apply threshold (>0.42), return Top-N
+  Sort by score, apply threshold (>0.38), return Top-N
 ```
 
 ---
@@ -92,7 +92,7 @@ space.
 | Gate             | Threshold       | Method                              |
 |------------------|-----------------|-------------------------------------|
 | Minimum size     | ≥ 40×40 px      | SCRFD bounding box area             |
-| Blur score       | Laplacian var > 80 | `cv2.Laplacian(gray).var()`      |
+| Blur score       | Laplacian var > 40 | `cv2.Laplacian(gray).var()`      |
 | Pose angle       | Yaw < 70°       | SCRFD 5-point landmark estimation   |
 
 Faces that fail any gate are skipped and logged with reason. No embedding stored.
@@ -181,7 +181,7 @@ query selfie before embedding:
 **Problem:** Without a minimum threshold, search always returns results even when
 the person isn't in the gallery.
 
-**Fix:** Minimum fused score = **0.42** (cosine similarity, MobileFaceNet FP16
+**Fix:** Minimum fused score = **0.38** (cosine similarity, MobileFaceNet FP16
 space). Tuned on internal validation set. Configurable via env var
 `MATCH_THRESHOLD`. Results below threshold return an empty array with
 `"no_match": true` — never a false positive result.
@@ -230,7 +230,7 @@ space). Tuned on internal validation set. Configurable via env var
 
 - Stage 1: Union of Top-50 ANN results from all three indices.
 - Stage 2: Weighted score fusion (weights: front=0.5, profile=0.3, low_light=0.2).
-- Minimum threshold: 0.42. Results deduplicated by `image_path`.
+- Minimum threshold: 0.38. Results deduplicated by `image_path`.
 
 ---
 
@@ -347,7 +347,7 @@ Step 2: Processing (2–4 seconds)
 │  ████████████████░░░░  Stage 2/2        │
 └──────────────────────────────────────────┘
 
-Step 3: Results
+Step 4: Results
 ┌──────────────────────────────────────────┐
 │  Found you in 14 photos! 🎉             │
 │  ┌────┐ ┌────┐ ┌────┐ ┌────┐           │
@@ -430,6 +430,6 @@ DELETE /baskets/:id                → 204 (purges Qdrant points + S3 objects)
 |-------------------------------|----------------|---------------------------------------------|
 | Ingestion throughput          | 600 imgs < 5min| 4-core pool, warm sessions, quality gate     |
 | Search latency (P95)          | < 800ms        | Union ANN + fusion on ≤150 candidates       |
-| False positive rate           | < 2%           | Threshold=0.42 + quality gate at query time |
+| False positive rate           | < 2%           | Threshold=0.38 + quality gate at query time |
 | Selfie-to-results (end-user)  | < 3s           | SSE progress, signed URL pre-generation     |
 | RAM per worker                | < 400MB        | FP16 model, no crop persistence             |

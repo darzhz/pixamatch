@@ -10,6 +10,10 @@ import os
 import shutil
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 from scripts.processor import FaceProcessor
 from scripts.storage import StorageClient
@@ -142,8 +146,8 @@ async def progress_events(basket_id: str):
         if initial: yield f"data: {initial}\n\n"
         
         while True:
-            message = pubsub.get_message(ignore_subscribe_const=True)
-            if message:
+            message = pubsub.get_message()
+            if message and message['type'] == 'message':
                 yield f"data: {message['data']}\n\n"
             await asyncio.sleep(1)
             
@@ -192,6 +196,12 @@ async def search_faces(basket_id: str, front: UploadFile = File(...), left: Opti
             if os.path.exists(p): os.remove(p)
             
     return results
+
+@app.get("/baskets/{basket_id}/images")
+async def get_basket_images(basket_id: str, limit: int = 50, marker: Optional[str] = None):
+    keys, next_marker = storage.list_images(basket_id, limit, marker)
+    images = [{"key": k, "url": storage.get_signed_url(k)} for k in keys]
+    return {"images": images, "next_marker": next_marker}
 
 @app.delete("/baskets/{basket_id}", status_code=204)
 async def delete_basket(basket_id: str):

@@ -83,7 +83,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     environment:
-      - VITE_API_URL=${VITE_API_URL:-https://${DOMAIN}/api}
+      - VITE_API_URL=https://${DOMAIN}/api
     depends_on:
       - backend
 

@@ -57,6 +57,23 @@ class StorageClient:
             ExpiresIn=expires_in
         )
 
+    def list_images(self, basket_id, limit=50, marker=None):
+        params = {
+            "Bucket": self.bucket,
+            "Prefix": f"{basket_id}/",
+            "MaxKeys": limit
+        }
+        if marker:
+            params["Marker"] = marker
+        
+        response = self.s3.list_objects(**params)
+        contents = response.get("Contents", [])
+        
+        keys = [obj["Key"] for obj in contents]
+        next_marker = response.get("NextMarker") or (keys[-1] if response.get("IsTruncated") else None)
+        
+        return keys, next_marker
+
 if __name__ == "__main__":
     # Quick test
     client = StorageClient()

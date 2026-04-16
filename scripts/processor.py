@@ -28,6 +28,7 @@ class FaceProcessor:
         self.storage = StorageClient()
         self.db = DatabaseClient()
         self.redis = redis.Redis(host=redis_host, decode_responses=True)
+        self.blur_threshold = float(os.getenv("BLUR_THRESHOLD", 40))
 
     def check_quality(self, face_crop, face_obj=None):
         h, w = face_crop.shape[:2]
@@ -36,7 +37,7 @@ class FaceProcessor:
         
         gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
         blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if blur_score < 40:
+        if blur_score < self.blur_threshold:
             return False, f"too_blurry_{blur_score:.1f}"
 
         # Pose Gate (Yaw < 70)
@@ -98,8 +99,8 @@ class FaceProcessor:
                     continue
                 
                 h, w = img.shape[:2]
-                # Scale to 640 max dimension
-                scale = 640 / max(h, w)
+                # Scale to 1280 max dimension
+                scale = 1280 / max(h, w)
                 img_resized = cv2.resize(img, (int(w * scale), int(h * scale)))
                 
                 # Conversion to PIL for scrfd package compatibility

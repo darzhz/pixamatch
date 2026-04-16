@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { useDropzone } from 'react-dropzone';
-import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw, Loader2 } from 'lucide-react';
+import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw, Loader2, Image as ImageIcon } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
 
@@ -11,6 +11,21 @@ export default function Studio() {
   const [progress, setProgress] = useState(null);
   const [showQR, setShowQR] = useState(false);
   const [clientProgress, setClientProgress] = useState({ done: 0, total: 0, status: 'idle' });
+  const [images, setImages] = useState([]);
+  const [nextMarker, setNextMarker] = useState(null);
+  const [loadingImages, setLoadingImages] = useState(false);
+  
+  const observer = useRef();
+  const lastImageRef = useCallback(node => {
+    if (loadingImages) return;
+    if (observer.current) observer.current.disconnect();
+    observer.current = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting && nextMarker) {
+        fetchImages(activeBasket.basket_id, nextMarker);
+      }
+    });
+    if (node) observer.current.observe(node);
+  }, [loadingImages, nextMarker, activeBasket]);
 
   useEffect(() => {
     const fetchBaskets = async () => {
@@ -23,6 +38,25 @@ export default function Studio() {
     };
     fetchBaskets();
   }, []);
+
+  const fetchImages = async (basketId, marker = null, reset = false) => {
+    setLoadingImages(true);
+    try {
+      const res = await axios.get(`/api/baskets/${basketId}/images`, {
+        params: { marker, limit: 24 }
+      });
+      if (reset) {
+        setImages(res.data.images);
+      } else {
+        setImages(prev => [...prev, ...res.data.images]);
+      }
+      setNextMarker(res.data.next_marker);
+    } catch (e) {
+      console.error("Error fetching images", e);
+    } finally {
+      setLoadingImages(false);
+    }
+  };
 
   const createBasket = async () => {
     const name = prompt("Basket Name:");
@@ -38,9 +72,12 @@ export default function Studio() {
   };
 
   const processImage = async (file) => {
+    const shouldCompress = import.meta.env.VITE_COMPRESS_STUDIO !== 'false';
+    if (!shouldCompress) return file;
+
     try {
       const bitmap = await createImageBitmap(file);
-      const maxSize = 640;
+      const maxSize = 1280;
       let width = bitmap.width;
       let height = bitmap.height;
 
@@ -59,7 +96,7 @@ export default function Studio() {
       const canvas = new OffscreenCanvas(width, height);
       const ctx = canvas.getContext('2d');
       ctx.drawImage(bitmap, 0, 0, width, height);
-      const blob = await canvas.convertToBlob({ type: 'image/webp', quality: 0.7 });
+      const blob = await canvas.convertToBlob({ type: 'image/webp', quality: 1.0 });
       return new File([blob], file.name.replace(/\.[^/.]+$/, "") + ".webp", { type: 'image/webp' });
     } catch (err) {
       console.error("Compression error", err);
@@ -107,6 +144,10 @@ export default function Studio() {
         try {
           const data = JSON.parse(event.data);
           setProgress(data);
+          // Refresh gallery when ingestion progress updates
+          if (data.done > 0 && data.done % 10 === 0) {
+             // Optional: trigger a partial refresh or just wait for scroll
+          }
         } catch (e) {
           console.error("Error parsing progress event", e);
         }
@@ -136,6 +177,9 @@ export default function Studio() {
         share_url: `${window.location.origin}/find/${basket.id}`,
         ...res.data
       });
+      setImages([]);
+      setNextMarker(null);
+      fetchImages(basket.id, null, true);
     } catch (e) {
       console.error("Error fetching basket info", e);
     }
@@ -257,6 +301,47 @@ export default function Studio() {
                 </div>
               </div>
             )}
+
+            {/* Gallery Section */}
+            <div className="mt-12">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-bold flex items-center gap-2">
+                  <ImageIcon className="text-purple-600" size={20} />
+                  Basket Photos
+                </h3>
+                <span className="text-gray-500 text-sm">{images.length} photos loaded</span>
+              </div>
+              
+              {images.length > 0 ? (
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-4">
+                  {images.map((img, index) => (
+                    <div 
+                      key={img.key} 
+                      ref={index === images.length - 1 ? lastImageRef : null}
+                      className="aspect-square rounded-xl overflow-hidden bg-gray-200 border border-gray-100 group relative shadow-sm"
+                    >
+                      <img 
+                        src={img.url} 
+                        alt="Basket item" 
+                        loading="lazy"
+                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                      />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors pointer-events-none" />
+                    </div>
+                  ))}
+                </div>
+              ) : !loadingImages && (
+                <div className="bg-white rounded-2xl p-12 text-center border border-gray-100 border-dashed">
+                  <p className="text-gray-400">No photos in this basket yet.</p>
+                </div>
+              )}
+              
+              {loadingImages && (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin text-purple-600" size={32} />
+                </div>
+              )}
+            </div>
 
             {/* QR Modal */}
             {showQR && (
