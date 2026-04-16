@@ -20,6 +20,7 @@ class StorageClient:
         self.bucket = bucket
         # self.s3 is for internal operations (uploads, etc.)
         self.internal_endpoint = f"http://{endpoint}"
+        self.public_endpoint = public_endpoint
         
         # self.signer is specifically for generating presigned URLs with the public hostname
         # so that the Host header in the signature matches what the browser hits.
