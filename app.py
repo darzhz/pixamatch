@@ -82,7 +82,13 @@ async def shutdown_event():
 # or can also be offloaded if needed.
 main_processor = FaceProcessor(SCRFD_MODEL, MFNET_MODEL)
 db = DatabaseClient()
-storage = StorageClient()
+storage = StorageClient(
+    endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+    access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+    secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
+    bucket=os.getenv("MINIO_BUCKET", "pixamatch"),
+    public_endpoint=os.getenv("MINIO_PUBLIC_ENDPOINT", None)
+)
 search_engine = SearchEngine(main_processor, db, storage)
 
 def run_ingestion_sync(basket_id: str, paths: List[str]):
