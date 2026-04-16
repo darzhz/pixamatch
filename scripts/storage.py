@@ -50,12 +50,20 @@ class StorageClient:
         return key
 
     def get_signed_url(self, key, expires_in=3600):
-        # Generate URL using the signer client which has the public endpoint_url
-        return self.signer.generate_presigned_url(
+        # Signed against internal minio:9000
+        url = self.signer.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},
             ExpiresIn=expires_in
         )
+        # Swap http://minio:9000/pixamatch/key
+        #  -> https://pixamatch.darzh.xyz/storage/pixamatch/key
+        if self.public_endpoint:
+            url = url.replace(
+                self.internal_endpoint,
+                f"https://{self.public_endpoint}/storage"
+            )
+        return url
 
     def list_images(self, basket_id, limit=50, marker=None):
         params = {

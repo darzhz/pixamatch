@@ -17,7 +17,7 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    
+
     # SSL Best Practices
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
@@ -29,10 +29,10 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
-    location /api/storage/ {
-        rewrite ^/api/storage/(.*) /$1 break;
+    location /storage/ {
+        rewrite ^/storage/(.*) /$1 break;
         proxy_pass http://minio:9000;
-        proxy_set_header Host $host; # 復原為 $host
+        proxy_set_header Host minio:9000;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
@@ -43,3 +43,4 @@ server {
         client_max_body_size 20M;
     }
 }
+
