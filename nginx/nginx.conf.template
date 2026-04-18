@@ -28,6 +28,11 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
+location /pixamatch/ {
+    proxy_pass http://minio:9000/pixamatch/;
+    proxy_set_header Host "pixamatch.darzh.xyz";
+    proxy_set_header X-Real-IP $remote_addr;
+}
 
     location /storage/ {
         rewrite ^/storage/(.*) /$1 break;

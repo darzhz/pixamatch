@@ -11,6 +11,15 @@ import json
 from PIL import Image
 import io
 
+# ArcFace Standard Reference Points for 112x112
+REFERENCE_POINTS = np.array([
+    [30.2946, 51.6963],  # Left Eye
+    [65.5318, 51.5014],  # Right Eye
+    [48.0252, 71.7366],  # Nose
+    [33.5493, 92.3655],  # Left Mouth
+    [62.7299, 92.2041]   # Right Mouth
+], dtype=np.float32)
+
 class FaceProcessor:
     def __init__(self, scrfd_path: str, mfnet_path: str, redis_host=os.getenv("REDIS_HOST", "localhost")):
         debug_log(f"Initializing FaceProcessor with {scrfd_path} and {mfnet_path}...")
@@ -31,6 +40,13 @@ class FaceProcessor:
         self.redis = redis.Redis(host=redis_host, decode_responses=True)
         self.blur_threshold = float(os.getenv("BLUR_THRESHOLD", 40))
 
+    def warp_face(self, img, kps):
+        """Standardizes face to 112x112 using Affine Transformation"""
+        M, _ = cv2.estimateAffinePartial2D(kps, REFERENCE_POINTS, method=cv2.RANSAC, ransacReprojThreshold=100)
+        if M is None:
+            return None
+        return cv2.warpAffine(img, M, self.rec_size, borderValue=0.0)
+
     def check_quality(self, face_crop, face_obj=None):
         h, w = face_crop.shape[:2]
         if h < 40 or w < 40:
@@ -42,20 +58,26 @@ class FaceProcessor:
             return False, f"too_blurry_{blur_score:.1f}"
 
         # Pose Gate
-        if face_obj and hasattr(face_obj, 'kps'):
-            kps = face_obj.kps
-            lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
-            if abs(rex - lex) > 0:
-                ratio = (nx - lex) / (rex - lex)
-                yaw_score = abs(ratio - 0.5) * 200
-                if yaw_score > 70:
-                    return False, f"extreme_pose_{yaw_score:.1f}"
+        if face_obj:
+            # We check pose before alignment to avoid wasting CPU on extreme profiles
+            kps = None
+            if hasattr(face_obj, 'kps'): kps = face_obj.kps
+            elif isinstance(face_obj, dict) and 'kps' in face_obj: kps = face_obj['kps']
+            elif hasattr(face_obj, 'landmarks'): kps = face_obj.landmarks
+
+            if kps is not None:
+                lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
+                if abs(rex - lex) > 0:
+                    ratio = (nx - lex) / (rex - lex)
+                    yaw_score = abs(ratio - 0.5) * 200
+                    if yaw_score > 70:
+                        return False, f"extreme_pose_{yaw_score:.1f}"
 
         return True, "ok"
 
     def get_embedding(self, face_crop):
-        img = cv2.resize(face_crop, self.rec_size)
-        img = img.astype(np.float32)
+        # Image is already aligned and resized to 112x112 by warp_face
+        img = face_crop.astype(np.float32)
         img = (img - 127.5) / 128.0
         img = np.transpose(img, (2, 0, 1))
         img = np.expand_dims(img, axis=0)
@@ -106,32 +128,40 @@ class FaceProcessor:
                 # Collect valid faces first
                 valid_faces_in_image = []
                 for face in faces:
+                    # Quality check on simple crop first (cheap)
                     x1, y1, x2, y2 = map(int, [face.bbox.upper_left.x, face.bbox.upper_left.y, face.bbox.lower_right.x, face.bbox.lower_right.y])
-                    face_crop = img[max(0, y1):y2, max(0, x1):x2]
-                    if face_crop.size == 0: continue
+                    quick_crop = img[max(0, y1):y2, max(0, x1):x2]
+                    if quick_crop.size == 0: continue
                     
-                    ok, reason = self.check_quality(face_crop, face)
+                    ok, reason = self.check_quality(quick_crop, face)
                     if not ok: 
                         debug_log(f"Face quality check failed in {os.path.basename(path)}: {reason}")
                         continue
-                    
-                    v_front = self.get_embedding(face_crop)
                     
                     # Safe KPS access
                     kps = None
                     if hasattr(face, 'kps'): kps = face.kps
                     elif isinstance(face, dict) and 'kps' in face: kps = face['kps']
                     elif hasattr(face, 'landmarks'): kps = face.landmarks
-                        
-                    if kps is not None:
+                    
+                    if kps is None:
+                        debug_log(f"Warning: No KPS for face in {os.path.basename(path)}, skipping alignment")
+                        face_aligned = cv2.resize(quick_crop, self.rec_size)
+                        is_profile = False
+                    else:
+                        # Perform Facial Alignment
+                        face_aligned = self.warp_face(img, kps)
+                        if face_aligned is None:
+                            debug_log(f"Alignment failed for face in {os.path.basename(path)}")
+                            continue
+                            
                         lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
                         is_profile = abs(((nx - lex) / (rex - lex) if abs(rex-lex) > 0 else 0.5) - 0.5) > 0.25
-                    else:
-                        is_profile = False
                     
-                    v_profile = v_front if is_profile else self.get_embedding(cv2.flip(face_crop, 1))
+                    v_front = self.get_embedding(face_aligned)
+                    v_profile = v_front if is_profile else self.get_embedding(cv2.flip(face_aligned, 1))
                     
-                    lab = cv2.cvtColor(face_crop, cv2.COLOR_BGR2LAB)
+                    lab = cv2.cvtColor(face_aligned, cv2.COLOR_BGR2LAB)
                     l, a, b = cv2.split(lab)
                     cl = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)).apply(l)
                     v_low_light = self.get_embedding(cv2.cvtColor(cv2.merge((cl,a,b)), cv2.COLOR_LAB2BGR))
@@ -169,11 +199,6 @@ class FaceProcessor:
                 
                 done += 1
                 self.update_progress(basket_id, done, total, faces_indexed, failed)
-            except Exception as e:
-                err = f"Error processing {os.path.basename(path)}: {str(e)}"
-                debug_log(err)
-                done += 1; failed += 1
-                self.update_progress(basket_id, done, total, faces_indexed, failed, last_error=err)
             except Exception as e:
                 err = f"Error processing {os.path.basename(path)}: {str(e)}"
                 debug_log(err)

@@ -5,6 +5,7 @@ import { Camera, Upload, Sparkles, Download, Share2, X, AlertCircle } from 'luci
 import SelfieCapture from './SelfieCapture';
 
 const API_BASE = '/api';
+const DEBUG = true;
 
 export default function Viewer() {
   const { basket_id } = useParams();
@@ -195,6 +196,13 @@ export default function Viewer() {
               {results.map((res, i) => (
                 <div key={i} className="group relative rounded-2xl overflow-hidden shadow-md bg-white border border-gray-100 aspect-square">
                   <img src={res.image_url} alt="Match" className="w-full h-full object-cover group-hover:scale-110 transition duration-500" />
+                  
+                  {DEBUG && (
+                    <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md text-white text-[10px] font-black px-2 py-1 rounded-full z-10 border border-white/20">
+                      {(res.score * 100).toFixed(1)}%
+                    </div>
+                  )}
+
                   <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition flex items-center justify-center opacity-0 group-hover:opacity-100">
                     <a href={res.image_url} download className="bg-white p-3 rounded-full text-purple-600 shadow-xl" target="_blank" rel="noreferrer">
                       <Download size={24} />

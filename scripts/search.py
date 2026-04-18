@@ -8,6 +8,16 @@ from .logger import debug_log, timeit
 from qdrant_client.http import models
 import os
 
+import cv2
+import numpy as np
+from PIL import Image, ImageOps
+from .processor import FaceProcessor, REFERENCE_POINTS
+from .database import DatabaseClient
+from .storage import StorageClient
+from .logger import debug_log, timeit
+from qdrant_client.http import models
+import os
+
 class SearchEngine:
     def __init__(self, processor: FaceProcessor, db: DatabaseClient, storage: StorageClient):
         debug_log("Initializing SearchEngine...")
@@ -16,16 +26,23 @@ class SearchEngine:
         self.storage = storage
         self.threshold = float(os.getenv("MATCH_THRESHOLD", 0.30))
 
+    def warp_face(self, img, kps):
+        """Standardizes face to 112x112 using Affine Transformation"""
+        M, _ = cv2.estimateAffinePartial2D(kps, REFERENCE_POINTS, method=cv2.RANSAC, ransacReprojThreshold=100)
+        if M is None:
+            return None
+        return cv2.warpAffine(img, M, (112, 112), borderValue=0.0)
+
     @timeit
     def normalize_selfie(self, image_path):
         debug_log(f"Normalizing selfie: {image_path}")
         # 1. EXIF correction
         img_pil = Image.open(image_path)
         img_pil = ImageOps.exif_transpose(img_pil)
-        # Convert to BGR for OpenCV operations (resizing/flipping)
+        # Convert to BGR for OpenCV operations
         img = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         
-        # 2. Scaling
+        # 2. Scaling (to reasonable size for detection)
         h, w = img.shape[:2]
         scale = 1280 / max(h, w)
         img_resized = cv2.resize(img, (int(w * scale), int(h * scale)))
@@ -37,78 +54,60 @@ class SearchEngine:
 
         # Attempt 1: Standard
         faces = detect_faces(img_resized)
-        best_img = img_resized
         
         # Attempt 2: Rescue Mode (for compressed images)
         if not faces:
             debug_log("Standard detection failed. Attempting Rescue Mode (CLAHE + Blur)...")
-            # Boost contrast
             lab = cv2.cvtColor(img_resized, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
             l = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)).apply(l)
             rescue_img = cv2.cvtColor(cv2.merge((l,a,b)), cv2.COLOR_LAB2BGR)
-            # Smooth artifacts
             rescue_img = cv2.GaussianBlur(rescue_img, (3,3), 0)
-            
             faces = detect_faces(rescue_img)
-            if faces:
-                debug_log("Rescue Mode successful.")
-                # We use faces from rescue_img but keep img_resized for embedding if possible,
-                # or just use rescue_img if it's cleaner for MFNet too. 
-                # MFNet usually prefers clean inputs, so we stick with img_resized.
-                best_img = img_resized 
 
-        # Attempt 3: Mirror Fallback (only if Rescue failed)
+        # Attempt 3: Mirror Fallback
         if not faces:
             debug_log("Attempting Mirror Fallback...")
             img_flipped = cv2.flip(img_resized, 1)
             faces = detect_faces(img_flipped)
             if faces:
-                debug_log("Mirror detection successful.")
-                best_img = img_flipped
+                img_resized = img_flipped
 
         if not faces:
             debug_log(f"No face detected in selfie: {image_path}")
             return None, "no_face_detected"
         
-        # 4. Crop and Quality Gate
+        # 4. Alignment and Quality Gate
         face = faces[0]
         
-        try:
-            x1 = int(face.bbox.upper_left.x)
-            y1 = int(face.bbox.upper_left.y)
-            x2 = int(face.bbox.lower_right.x)
-            y2 = int(face.bbox.lower_right.y)
-        except AttributeError:
-            x1 = int(face.bbox['upper_left']['x'])
-            y1 = int(face.bbox['upper_left']['y'])
-            x2 = int(face.bbox['lower_right']['x'])
-            y2 = int(face.bbox['lower_right']['y'])
+        # Safe KPS access
+        kps = None
+        if hasattr(face, 'kps'): kps = face.kps
+        elif isinstance(face, dict) and 'kps' in face: kps = face['kps']
+        elif hasattr(face, 'landmarks'): kps = face.landmarks
 
-        # Boundary Safety
-        h, w = best_img.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        
-        face_crop = best_img[y1:y2, x1:x2]
-        
-        if face_crop.size == 0:
-            debug_log("Empty face crop generated.")
-            return None, "invalid_crop"
+        if kps is None:
+            debug_log("No KPS found in selfie, fallback to simple crop.")
+            try:
+                x1, y1, x2, y2 = map(int, [face.bbox.upper_left.x, face.bbox.upper_left.y, face.bbox.lower_right.x, face.bbox.lower_right.y])
+            except:
+                x1, y1, x2, y2 = map(int, [face.bbox['upper_left']['x'], face.bbox['upper_left']['y'], face.bbox['lower_right']['x'], face.bbox['lower_right']['y']])
+            face_aligned = cv2.resize(img_resized[max(0,y1):y2, max(0,x1):x2], (112, 112))
+        else:
+            face_aligned = self.warp_face(img_resized, kps)
+            if face_aligned is None:
+                return None, "alignment_failed"
 
-        # Search-specific quality tolerance:
-        # We allow borderline blurry images or extreme poses because search is user-driven.
-        # But we still block truly tiny or pitch-black crops.
-        ok, reason = self.processor.check_quality(face_crop, face)
+        # Search-specific quality tolerance
+        ok, reason = self.processor.check_quality(face_aligned, face)
         if not ok:
             debug_log(f"Selfie quality check failed: {reason}")
-            # Lenience for search
             if "too_blurry" in reason or "extreme_pose" in reason:
                 debug_log("Search lenience: allowing borderline quality.")
-                return face_crop, "ok"
+                return face_aligned, "ok"
             return None, reason
             
-        return face_crop, "ok"
+        return face_aligned, "ok"
 
     @timeit
     def search(self, basket_id, selfie_paths):
