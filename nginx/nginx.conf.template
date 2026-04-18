@@ -40,7 +40,11 @@ server {
         proxy_pass http://backend:8000/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        client_max_body_size 20M;
+        client_max_body_size 500M;
+        
+        # Disable buffering for SSE (near-instant updates)
+        proxy_buffering off;
+        proxy_cache off;
     }
 }
 

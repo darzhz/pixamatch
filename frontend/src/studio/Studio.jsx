@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { useDropzone } from 'react-dropzone';
-import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw, Loader2, Image as ImageIcon } from 'lucide-react';
+import { Folder, Upload, Link, QrCode, CheckCircle, RefreshCcw, Loader2, Image as ImageIcon, Trash2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
 
@@ -27,15 +27,16 @@ export default function Studio() {
     if (node) observer.current.observe(node);
   }, [loadingImages, nextMarker, activeBasket]);
 
+  const fetchBaskets = async () => {
+    try {
+      const res = await axios.get(`/api/baskets`);
+      setBaskets(res.data.baskets);
+    } catch (e) {
+      console.error("Error fetching baskets", e);
+    }
+  };
+
   useEffect(() => {
-    const fetchBaskets = async () => {
-      try {
-        const res = await axios.get(`/api/baskets`);
-        setBaskets(res.data.baskets);
-      } catch (e) {
-        console.error("Error fetching baskets", e);
-      }
-    };
     fetchBaskets();
   }, []);
 
@@ -71,6 +72,22 @@ export default function Studio() {
     }
   };
 
+  const deleteBasket = async (id, e) => {
+    if (e) e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this basket? All images and data will be permanently removed.")) return;
+    
+    try {
+      await axios.delete(`/api/baskets/${id}`);
+      setBaskets(prev => prev.filter(b => b.id !== id));
+      if (activeBasket?.basket_id === id) {
+        setActiveBasket(null);
+        setImages([]);
+      }
+    } catch (err) {
+      alert("Error deleting basket: " + err.message);
+    }
+  };
+
   const processImage = async (file) => {
     const shouldCompress = import.meta.env.VITE_COMPRESS_STUDIO !== 'false';
     if (!shouldCompress) return file;
@@ -96,7 +113,8 @@ export default function Studio() {
       const canvas = new OffscreenCanvas(width, height);
       const ctx = canvas.getContext('2d');
       ctx.drawImage(bitmap, 0, 0, width, height);
-      const blob = await canvas.convertToBlob({ type: 'image/webp', quality: 1.0 });
+      // Quality 0.85 provides a huge size reduction with minimal visual loss
+      const blob = await canvas.convertToBlob({ type: 'image/webp', quality: 0.85 });
       return new File([blob], file.name.replace(/\.[^/.]+$/, "") + ".webp", { type: 'image/webp' });
     } catch (err) {
       console.error("Compression error", err);
@@ -106,9 +124,9 @@ export default function Studio() {
 
   const onDrop = async (acceptedFiles) => {
     if (!activeBasket) return;
-    setClientProgress({ done: 0, total: acceptedFiles.length, status: 'processing' });
+    setClientProgress({ done: 0, total: acceptedFiles.length, status: 'compressing' });
     
-    const uploadBatchSize = 20;
+    const uploadBatchSize = 10; // Safer batch size
     const concurrency = 3;
     let currentBatch = [];
     
@@ -117,9 +135,14 @@ export default function Studio() {
       const results = await Promise.all(chunk.map(processImage));
       currentBatch.push(...results);
       
-      setClientProgress(prev => ({ ...prev, done: Math.min(i + concurrency, acceptedFiles.length) }));
+      setClientProgress(prev => ({ 
+        ...prev, 
+        done: Math.min(i + concurrency, acceptedFiles.length),
+        status: 'compressing'
+      }));
 
       if (currentBatch.length >= uploadBatchSize || i + concurrency >= acceptedFiles.length) {
+        setClientProgress(prev => ({ ...prev, status: 'uploading' }));
         const formData = new FormData();
         currentBatch.forEach(file => formData.append('images', file));
         try {
@@ -200,13 +223,20 @@ export default function Studio() {
         </button>
         <div className="flex-1 overflow-y-auto space-y-1">
           {baskets.map(b => (
-            <button 
-              key={b.id}
+            <div 
+              key={b.id} 
+              className={`group flex items-center justify-between px-3 py-2 rounded-md transition text-sm cursor-pointer ${activeBasket?.basket_id === b.id ? 'bg-purple-100 text-purple-700 font-bold' : 'hover:bg-gray-100'}`}
               onClick={() => selectBasket(b)}
-              className={`w-full text-left px-3 py-2 rounded-md transition text-sm ${activeBasket?.basket_id === b.id ? 'bg-purple-100 text-purple-700 font-bold' : 'hover:bg-gray-100'}`}
             >
-              {b.name || "Untitled"}
-            </button>
+              <span className="truncate flex-1">{b.name || "Untitled"}</span>
+              <button 
+                onClick={(e) => deleteBasket(b.id, e)}
+                className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-600 transition"
+                title="Delete Basket"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
           ))}
         </div>
       </div>
@@ -232,6 +262,12 @@ export default function Studio() {
                   className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-white bg-gray-50 transition shadow-sm font-medium"
                 >
                   <QrCode size={18} /> QR Code
+                </button>
+                <button 
+                  onClick={() => deleteBasket(activeBasket.basket_id)}
+                  className="flex items-center gap-2 px-4 py-2 border border-red-200 text-red-600 rounded-lg hover:bg-red-50 transition shadow-sm font-medium"
+                >
+                  <Trash2 size={18} /> Delete
                 </button>
               </div>
             </div>
@@ -285,6 +321,18 @@ export default function Studio() {
                     style={{ width: `${(progress.done / progress.total) * 100}%` }}
                   ></div>
                 </div>
+
+                {/* Error Display */}
+                {progress.last_error && (
+                  <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl flex gap-3 items-start animate-pulse">
+                    <RefreshCcw className="text-red-500 shrink-0 mt-0.5" size={18} />
+                    <div className="text-sm">
+                      <p className="font-bold text-red-800">Recent Error</p>
+                      <p className="text-red-600 leading-snug">{progress.last_error}</p>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-3 gap-6 pt-6 border-t border-gray-50">
                    <div className="text-center">
                      <p className="text-2xl font-bold text-green-600">{progress.done}</p>

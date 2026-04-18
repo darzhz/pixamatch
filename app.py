@@ -152,10 +152,11 @@ async def progress_events(basket_id: str):
         if initial: yield f"data: {initial}\n\n"
         
         while True:
+            # Check for messages more frequently for "instant" feel
             message = pubsub.get_message()
             if message and message['type'] == 'message':
                 yield f"data: {message['data']}\n\n"
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1) 
             
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

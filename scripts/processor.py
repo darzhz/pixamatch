@@ -64,13 +64,23 @@ class FaceProcessor:
         net_out = self.recognizer.run(None, inputs)[0]
         return net_out[0].tolist()
 
-    def update_progress(self, basket_id, done, total, faces_indexed, failed):
-        data = json.dumps({"done": done, "total": total, "faces_indexed": faces_indexed, "failed": failed})
-        self.redis.set(f"progress:{basket_id}", data)
-        self.redis.publish(f"events:{basket_id}", data)
+    def update_progress(self, basket_id, done, total, faces_indexed, failed, last_error=None):
+        data = {
+            "done": done, 
+            "total": total, 
+            "faces_indexed": faces_indexed, 
+            "failed": failed
+        }
+        if last_error:
+            data["last_error"] = last_error
+            
+        json_data = json.dumps(data)
+        self.redis.set(f"progress:{basket_id}", json_data)
+        self.redis.publish(f"events:{basket_id}", json_data)
 
     @timeit
     def process_basket_images(self, basket_id, image_paths):
+        debug_log(f"Starting ingestion for basket {basket_id} with {len(image_paths)} images")
         total = len(image_paths)
         done = 0; failed = 0; faces_indexed = 0
         batch_faces = []
@@ -78,41 +88,46 @@ class FaceProcessor:
         
         for path in image_paths:
             try:
+                debug_log(f"Processing image: {path}")
                 img = cv2.imread(path)
                 if img is None:
+                    err = f"Failed to load image: {os.path.basename(path)}"
+                    debug_log(err)
                     done += 1; failed += 1
-                    self.update_progress(basket_id, done, total, faces_indexed, failed)
+                    self.update_progress(basket_id, done, total, faces_indexed, failed, last_error=err)
                     continue
                 
                 # Detection (on original resolution)
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 pil_img = Image.fromarray(img_rgb)
                 faces = self.detector.detect(pil_img)
+                debug_log(f"Detected {len(faces)} faces in {os.path.basename(path)}")
                 
-                # Compress for Storage
-                filename = os.path.basename(path)
-                comp_filename = os.path.splitext(filename)[0] + ".webp"
-                s3_key = f"{basket_id}/{comp_filename}"
-                
-                # Save compressed to buffer
-                comp_img = Image.fromarray(img_rgb)
-                buffer = io.BytesIO()
-                comp_img.save(buffer, format="WEBP", quality=85)
-                buffer.seek(0)
-                self.storage.upload_fileobj(buffer, s3_key)
-                
+                # Collect valid faces first
+                valid_faces_in_image = []
                 for face in faces:
                     x1, y1, x2, y2 = map(int, [face.bbox.upper_left.x, face.bbox.upper_left.y, face.bbox.lower_right.x, face.bbox.lower_right.y])
                     face_crop = img[max(0, y1):y2, max(0, x1):x2]
                     if face_crop.size == 0: continue
                     
-                    ok, _ = self.check_quality(face_crop, face)
-                    if not ok: continue
+                    ok, reason = self.check_quality(face_crop, face)
+                    if not ok: 
+                        debug_log(f"Face quality check failed in {os.path.basename(path)}: {reason}")
+                        continue
                     
                     v_front = self.get_embedding(face_crop)
-                    kps = face.kps
-                    lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
-                    is_profile = abs(((nx - lex) / (rex - lex) if abs(rex-lex) > 0 else 0.5) - 0.5) > 0.25
+                    
+                    # Safe KPS access
+                    kps = None
+                    if hasattr(face, 'kps'): kps = face.kps
+                    elif isinstance(face, dict) and 'kps' in face: kps = face['kps']
+                    elif hasattr(face, 'landmarks'): kps = face.landmarks
+                        
+                    if kps is not None:
+                        lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
+                        is_profile = abs(((nx - lex) / (rex - lex) if abs(rex-lex) > 0 else 0.5) - 0.5) > 0.25
+                    else:
+                        is_profile = False
                     
                     v_profile = v_front if is_profile else self.get_embedding(cv2.flip(face_crop, 1))
                     
@@ -121,20 +136,52 @@ class FaceProcessor:
                     cl = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)).apply(l)
                     v_low_light = self.get_embedding(cv2.cvtColor(cv2.merge((cl,a,b)), cv2.COLOR_LAB2BGR))
                     
-                    batch_faces.append({
-                        "image_path": s3_key,
+                    valid_faces_in_image.append({
                         "vectors": {"front": v_front, "profile": v_profile, "low_light": v_low_light},
                         "bbox": [x1, y1, x2, y2],
                         "quality_score": float(face.probability)
                     })
-                    faces_indexed += 1
-                    if len(batch_faces) >= batch_size:
-                        self.db.upsert_faces_batch(basket_id, batch_faces); batch_faces = []
+
+                # Only upload if we have indexed faces
+                if valid_faces_in_image:
+                    filename = os.path.basename(path)
+                    comp_filename = os.path.splitext(filename)[0] + ".webp"
+                    s3_key = f"{basket_id}/{comp_filename}"
+                    
+                    # Upload compressed version
+                    comp_img = Image.fromarray(img_rgb)
+                    buffer = io.BytesIO()
+                    comp_img.save(buffer, format="WEBP", quality=85)
+                    buffer.seek(0)
+                    self.storage.upload_fileobj(buffer, s3_key)
+                    
+                    for vf in valid_faces_in_image:
+                        vf["image_path"] = s3_key
+                        batch_faces.append(vf)
+                        faces_indexed += 1
+                        
+                    debug_log(f"Indexed {len(valid_faces_in_image)} faces and uploaded {s3_key}")
+                else:
+                    debug_log(f"Skipping storage for {os.path.basename(path)} (no valid faces found)")
+
+                if len(batch_faces) >= batch_size:
+                    self.db.upsert_faces_batch(basket_id, batch_faces); batch_faces = []
                 
                 done += 1
                 self.update_progress(basket_id, done, total, faces_indexed, failed)
             except Exception as e:
-                debug_log(f"Err {path}: {e}"); done += 1; failed += 1
-                self.update_progress(basket_id, done, total, faces_indexed, failed)
+                err = f"Error processing {os.path.basename(path)}: {str(e)}"
+                debug_log(err)
+                done += 1; failed += 1
+                self.update_progress(basket_id, done, total, faces_indexed, failed, last_error=err)
+            except Exception as e:
+                err = f"Error processing {os.path.basename(path)}: {str(e)}"
+                debug_log(err)
+                done += 1; failed += 1
+                self.update_progress(basket_id, done, total, faces_indexed, failed, last_error=err)
 
-        if batch_faces: self.db.upsert_faces_batch(basket_id, batch_faces)
+        if batch_faces: 
+            debug_log(f"Upserting final batch of {len(batch_faces)} faces")
+            self.db.upsert_faces_batch(basket_id, batch_faces)
+        
+        debug_log(f"Ingestion finished for {basket_id}. Total: {total}, Done: {done}, Failed: {failed}, Faces: {faces_indexed}")
