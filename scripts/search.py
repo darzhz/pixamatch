@@ -81,10 +81,7 @@ class SearchEngine:
         face = faces[0]
         
         # Safe KPS access
-        kps = None
-        if hasattr(face, 'kps'): kps = face.kps
-        elif isinstance(face, dict) and 'kps' in face: kps = face['kps']
-        elif hasattr(face, 'landmarks'): kps = face.landmarks
+        kps = self.processor.extract_kps(face)
 
         if kps is None:
             debug_log("No KPS found in selfie, fallback to simple crop.")

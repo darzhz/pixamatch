@@ -40,6 +40,29 @@ class FaceProcessor:
         self.redis = redis.Redis(host=redis_host, decode_responses=True)
         self.blur_threshold = float(os.getenv("BLUR_THRESHOLD", 40))
 
+    @staticmethod
+    def extract_kps(face):
+        kps = None
+        if hasattr(face, 'kps'): kps = face.kps
+        elif isinstance(face, dict) and 'kps' in face: kps = face['kps']
+        elif hasattr(face, 'landmarks'): kps = face.landmarks
+        elif hasattr(face, 'keypoints'):
+            kp = face.keypoints
+            if hasattr(kp, 'left_eye'): # scrfd library object
+                 kps = np.array([
+                    [kp.left_eye.x, kp.left_eye.y],
+                    [kp.right_eye.x, kp.right_eye.y],
+                    [kp.nose.x, kp.nose.y],
+                    [kp.left_mouth.x, kp.left_mouth.y],
+                    [kp.right_mouth.x, kp.right_mouth.y]
+                ], dtype=np.float32)
+            else:
+                kps = kp
+        
+        if kps is not None:
+            return np.asarray(kps, dtype=np.float32)
+        return None
+
     def warp_face(self, img, kps):
         """Standardizes face to 112x112 using Affine Transformation"""
         M, _ = cv2.estimateAffinePartial2D(kps, REFERENCE_POINTS, method=cv2.RANSAC, ransacReprojThreshold=100)
@@ -60,10 +83,7 @@ class FaceProcessor:
         # Pose Gate
         if face_obj:
             # We check pose before alignment to avoid wasting CPU on extreme profiles
-            kps = None
-            if hasattr(face_obj, 'kps'): kps = face_obj.kps
-            elif isinstance(face_obj, dict) and 'kps' in face_obj: kps = face_obj['kps']
-            elif hasattr(face_obj, 'landmarks'): kps = face_obj.landmarks
+            kps = self.extract_kps(face_obj)
 
             if kps is not None:
                 lex, rex, nx = kps[0][0], kps[1][0], kps[2][0]
@@ -139,10 +159,7 @@ class FaceProcessor:
                         continue
                     
                     # Safe KPS access
-                    kps = None
-                    if hasattr(face, 'kps'): kps = face.kps
-                    elif isinstance(face, dict) and 'kps' in face: kps = face['kps']
-                    elif hasattr(face, 'landmarks'): kps = face.landmarks
+                    kps = self.extract_kps(face)
                     
                     if kps is None:
                         debug_log(f"Warning: No KPS for face in {os.path.basename(path)}, skipping alignment")
