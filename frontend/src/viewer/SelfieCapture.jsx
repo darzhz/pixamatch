@@ -73,6 +73,7 @@ export default function SelfieCapture({ onComplete }) {
           ref={webcamRef}
           screenshotFormat="image/webp"
           videoConstraints={videoConstraints}
+          mirrored={true}
           className="w-full h-full object-cover grayscale-[0.2]"
         />
 

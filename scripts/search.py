@@ -24,7 +24,7 @@ class SearchEngine:
         self.processor = processor
         self.db = db
         self.storage = storage
-        self.threshold = float(os.getenv("MATCH_THRESHOLD", 0.30))
+        self.threshold = float(os.getenv("MATCH_THRESHOLD", 0.40))
 
     def warp_face(self, img, kps):
         """Standardizes face to 112x112 using Affine Transformation"""

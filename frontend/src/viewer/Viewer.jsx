@@ -46,7 +46,10 @@ export default function Viewer() {
       if (captures.left) formData.append('left', await toFile(captures.left, "left.webp"));
       if (captures.right) formData.append('right', await toFile(captures.right, "right.webp"));
 
+      const startTime = performance.now();
       const res = await axios.post(`${API_BASE}/baskets/${basket_id}/search`, formData);
+      const endTime = performance.now();
+      console.log(`Search took ${(endTime - startTime).toFixed(2)}ms`);
       
       if (res.data.no_match) {
         setResults([]); // Explicitly set to empty array
@@ -75,7 +78,11 @@ export default function Viewer() {
     formData.append('front', file);
 
     try {
+      const startTime = performance.now();
       const res = await axios.post(`${API_BASE}/baskets/${basket_id}/search`, formData);
+      const endTime = performance.now();
+      console.log(`Quick Search took ${(endTime - startTime).toFixed(2)}ms`);
+
       if (res.data.no_match) {
         setResults([]);
         setError(res.data.reason || "No photos found matching your face.");
