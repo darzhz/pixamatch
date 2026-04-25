@@ -127,9 +127,10 @@ async def create_basket(basket: BasketCreate):
     basket_id = str(uuid.uuid4())
     r.set(f"basket:{basket_id}:name", basket.name)
     meta_db.create_basket(basket_id, basket.name)
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
     return {
         "basket_id": basket_id, "id": basket_id, "name": basket.name,
-        "share_url": f"http://localhost:5173/find/{basket_id}"
+        "share_url": f"{frontend_url}/find/{basket_id}"
     }
 
 @app.get("/baskets")
@@ -239,7 +240,8 @@ async def delete_basket(basket_id: str):
 async def create_cull_link(basket_id: str, req: CullLinkCreate):
     token = str(uuid.uuid4())
     meta_db.create_cull_link(token, basket_id, req.config)
-    return {"token": token, "url": f"http://localhost:5173/cull/{basket_id}/{token}"}
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    return {"token": token, "url": f"{frontend_url}/cull/{basket_id}/{token}"}
 
 @app.get("/baskets/{basket_id}/cull/{token}")
 async def get_cull_session(basket_id: str, token: str):
@@ -255,8 +257,7 @@ async def get_cull_session(basket_id: str, token: str):
         session = json.loads(session_data)
     else:
         # Create new session
-        # Get all images for this basket (simplified: all images)
-        keys, _ = storage.list_images(basket_id, limit=1000) # Limit for culling
+        keys, _ = storage.list_images(basket_id, limit=1000)
         
         session = {
             "session_id": str(uuid.uuid4()),
@@ -264,6 +265,7 @@ async def get_cull_session(basket_id: str, token: str):
             "access_token": token,
             "status": "active",
             "queue": keys,
+            "current_index": 0,
             "kept": [],
             "discarded": [],
             "unsure": []
@@ -275,7 +277,7 @@ async def get_cull_session(basket_id: str, token: str):
     return {**session, "queue": queue_with_urls}
 
 @app.patch("/baskets/{basket_id}/cull/{token}/decisions")
-async def update_cull_decisions(basket_id: str, token: str, batch: CullDecisionsBatch):
+async def update_cull_decisions(basket_id: str, token: str, payload: dict):
     session_key = f"cull_session:{token}"
     session_data = r.get(session_key)
     if not session_data:
@@ -285,20 +287,20 @@ async def update_cull_decisions(basket_id: str, token: str, batch: CullDecisions
     if session["status"] == "submitted":
         raise HTTPException(status_code=400, detail="Session already submitted")
 
-    for dec in batch.decisions:
-        # Remove from queue if present
-        if dec.image_path in session["queue"]:
-            session["queue"].remove(dec.image_path)
+    for dec in payload.get("decisions", []):
+        image_path = dec["image_path"]
+        action = dec["action"]
         
         # Add to correct list
-        if dec.action == "keep":
-            if dec.image_path not in session["kept"]: session["kept"].append(dec.image_path)
-        elif dec.action == "discard":
-            if dec.image_path not in session["discarded"]: session["discarded"].append(dec.image_path)
-        elif dec.action == "unsure":
-            # Re-queue at the end
-            if dec.image_path not in session["queue"]: session["queue"].append(dec.image_path)
-            if dec.image_path not in session["unsure"]: session["unsure"].append(dec.image_path)
+        if action == "keep":
+            if image_path not in session["kept"]: session["kept"].append(image_path)
+        elif action == "discard":
+            if image_path not in session["discarded"]: session["discarded"].append(image_path)
+        elif action == "unsure":
+            if image_path not in session["unsure"]: session["unsure"].append(image_path)
+
+    if "current_index" in payload:
+        session["current_index"] = payload["current_index"]
 
     r.set(session_key, json.dumps(session), ex=86400 * 7)
     return {"status": "ok"}

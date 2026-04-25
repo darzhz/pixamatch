@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Heart, X, RotateCcw, Maximize2, CheckCircle, Info, Loader2, List, Trash2, ChevronDown } from 'lucide-react';
@@ -26,6 +26,7 @@ export default function CullView() {
     try {
       const res = await axios.get(`/api/baskets/${basket_id}/cull/${token}`);
       setSession(res.data);
+      setCurrentIndex(res.data.current_index || 0);
       if (res.data.status === 'submitted') {
         setShowFinished(true);
       }
@@ -41,41 +42,11 @@ export default function CullView() {
     fetchSession();
   }, [fetchSession]);
 
-  const handleDecision = useCallback((action) => {
-    if (currentIndex >= session.queue.length || exitDirection) return;
-
-    const directionMap = { 'keep': 'right', 'discard': 'left', 'unsure': 'up' };
-    setExitDirection(directionMap[action]);
-
-    setTimeout(() => {
-      const currentImage = session.queue[currentIndex];
-      const newDecision = { image_path: currentImage.key, action };
-      
-      setDecisions(prev => [...prev, newDecision]);
-      setHistory(prev => [...prev, { index: currentIndex, decision: newDecision }]);
-      
-      // Update local session state for Kept photos
-      if (action === 'keep') {
-        setSession(prev => ({
-          ...prev,
-          kept: [...prev.kept, currentImage.key]
-        }));
-      }
-
-      setCurrentIndex(prev => prev + 1);
-      setExitDirection(null);
-      setDrag({ x: 0, y: 0, active: false });
-
-      if (decisions.length > 0 && decisions.length % 5 === 0) {
-        syncDecisions([...decisions, newDecision]);
-      }
-    }, 300);
-  }, [currentIndex, session, decisions, exitDirection]);
-
-  const syncDecisions = async (batch) => {
+  const syncDecisions = async (batch, newIndex) => {
     try {
       await axios.patch(`/api/baskets/${basket_id}/cull/${token}/decisions`, {
-        decisions: batch
+        decisions: batch,
+        current_index: newIndex
       });
       setDecisions([]);
     } catch (e) {
@@ -83,11 +54,41 @@ export default function CullView() {
     }
   };
 
+  const handleDecision = useCallback((action) => {
+    if (!session || currentIndex >= session.queue.length || exitDirection) return;
+
+    const directionMap = { 'keep': 'right', 'discard': 'left', 'unsure': 'up' };
+    setExitDirection(directionMap[action]);
+
+    const currentImage = session.queue[currentIndex];
+    const newDecision = { image_path: currentImage.key, action };
+    const nextIndex = currentIndex + 1;
+
+    setTimeout(() => {
+      setDecisions(prev => [...prev, newDecision]);
+      setHistory(prev => [...prev, { index: currentIndex, decision: newDecision }]);
+      
+      if (action === 'keep') {
+        setSession(prev => ({
+          ...prev,
+          kept: [...prev.kept, currentImage.key]
+        }));
+      }
+
+      setCurrentIndex(nextIndex);
+      setExitDirection(null);
+      setDrag({ x: 0, y: 0, active: false });
+
+      // Sync immediately for better persistence
+      syncDecisions([newDecision], nextIndex);
+    }, 300);
+  }, [currentIndex, session, exitDirection]);
+
   const undo = () => {
     if (history.length === 0 || exitDirection) return;
     const last = history[history.length - 1];
+    const prevIndex = last.index;
     
-    // Remove from kept if it was a 'keep' decision
     if (last.decision.action === 'keep') {
       setSession(prev => ({
         ...prev,
@@ -96,7 +97,8 @@ export default function CullView() {
     }
 
     setHistory(prev => prev.slice(0, -1));
-    setCurrentIndex(last.index);
+    setCurrentIndex(prevIndex);
+    syncDecisions([], prevIndex); // Sync the index back
   };
 
   const submit = async () => {
@@ -104,10 +106,6 @@ export default function CullView() {
     
     setSubmitting(true);
     try {
-      if (decisions.length > 0) {
-        await syncDecisions(decisions);
-      }
-      
       const name = prompt("Name this selection (optional):", `Selection by Client`);
       await axios.post(`/api/baskets/${basket_id}/submit-cull`, {
         token,
@@ -123,11 +121,12 @@ export default function CullView() {
     }
   };
 
+  // Improved Touch Handlers for Tinder-like feel
   const onTouchStart = (e) => {
     if (exitDirection || showFavorites) return;
     const touch = e.touches[0];
     startPos.current = { x: touch.clientX, y: touch.clientY };
-    setDrag(prev => ({ ...prev, active: true }));
+    setDrag({ x: 0, y: 0, active: true });
   };
 
   const onTouchMove = (e) => {
@@ -135,44 +134,53 @@ export default function CullView() {
     const touch = e.touches[0];
     const dx = touch.clientX - startPos.current.x;
     const dy = touch.clientY - startPos.current.y;
+    
+    // Tinder-like rotation based on x offset
     setDrag({ x: dx, y: dy, active: true });
   };
 
   const onTouchEnd = () => {
     if (!drag.active || exitDirection) return;
-    const threshold = 100;
+    const threshold = window.innerWidth * 0.3; // Responsive threshold
     
-    if (drag.x > threshold) {
-      handleDecision('keep');
-    } else if (drag.x < -threshold) {
-      handleDecision('discard');
-    } else if (drag.y < -threshold) {
+    if (Math.abs(drag.x) > threshold) {
+      handleDecision(drag.x > 0 ? 'keep' : 'discard');
+    } else if (drag.y < -threshold && Math.abs(drag.x) < threshold) {
       handleDecision('unsure');
     } else {
+      // Spring back animation
       setDrag({ x: 0, y: 0, active: false });
     }
   };
 
+  // Helper to find URL for a key from the queue
+  const getUrlForKey = (key) => {
+    return session?.queue.find(item => item.key === key)?.url;
+  };
+
   if (loading) return (
-    <div className="h-screen flex items-center justify-center bg-gray-900 text-white">
-      <Loader2 className="animate-spin" size={48} />
+    <div className="h-screen flex items-center justify-center bg-gray-900 text-white font-sans">
+      <div className="text-center">
+        <Loader2 className="animate-spin mb-4 mx-auto" size={48} />
+        <p className="text-gray-400 font-bold uppercase tracking-widest text-xs">Loading Session...</p>
+      </div>
     </div>
   );
 
   if (showFinished) return (
-    <div className="h-screen flex flex-col items-center justify-center bg-gray-900 text-white p-6 text-center animate-in fade-in duration-700">
-      <div className="bg-green-500 w-20 h-20 rounded-full flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(34,197,94,0.4)]">
-        <CheckCircle size={48} />
+    <div className="h-screen flex flex-col items-center justify-center bg-gray-900 text-white p-6 text-center animate-in fade-in duration-700 font-sans">
+      <div className="bg-green-500 w-24 h-24 rounded-full flex items-center justify-center mb-8 shadow-[0_0_50px_rgba(34,197,94,0.5)]">
+        <CheckCircle size={56} />
       </div>
-      <h2 className="text-3xl font-black mb-4 tracking-tighter">SUBMITTED!</h2>
-      <p className="text-gray-400 mb-8 max-w-sm">
-        The photographer has been notified. You can safely close this window.
+      <h2 className="text-4xl font-black mb-4 tracking-tighter italic">SUBMITTED!</h2>
+      <p className="text-gray-400 mb-10 max-w-sm text-lg">
+        Your selections have been sent to the photographer.
       </p>
       <button 
         onClick={() => navigate('/')}
-        className="px-10 py-4 bg-white text-black rounded-2xl font-black shadow-xl"
+        className="px-12 py-5 bg-white text-black rounded-[2rem] font-black shadow-2xl hover:scale-105 active:scale-95 transition-all text-xl"
       >
-        Done
+        Return to Studio
       </button>
     </div>
   );
@@ -184,83 +192,114 @@ export default function CullView() {
   const getCardStyle = () => {
     if (exitDirection) {
       const transform = {
-        left: 'translate3d(-150%, 0, 0) rotate(-20deg)',
-        right: 'translate3d(150%, 0, 0) rotate(20deg)',
-        up: 'translate3d(0, -150%, 0)'
+        left: 'translate3d(-200%, 0, 0) rotate(-30deg)',
+        right: 'translate3d(200%, 0, 0) rotate(30deg)',
+        up: 'translate3d(0, -200%, 0)'
       }[exitDirection];
-      return { transform, transition: 'all 0.3s ease-out', opacity: 0 };
+      return { transform, transition: 'all 0.4s cubic-bezier(0.3, 0, 0.2, 1)', opacity: 0 };
     }
     if (drag.active) {
+      // Rotation increases as you drag away from center
+      const rotation = drag.x * 0.05;
       return { 
-        transform: `translate3d(${drag.x}px, ${drag.y}px, 0) rotate(${drag.x * 0.1}deg)`,
-        transition: 'none'
+        transform: `translate3d(${drag.x}px, ${drag.y}px, 0) rotate(${rotation}deg)`,
+        transition: 'none',
+        zIndex: 50
       };
     }
     return { 
-      transform: 'translate3d(0,0,0)', 
-      transition: 'all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275)' 
+      transform: 'translate3d(0,0,0) rotate(0deg)', 
+      transition: 'all 0.6s cubic-bezier(0.23, 1, 0.32, 1)',
+      zIndex: 40
     };
   };
 
   return (
-    <div className="h-screen bg-black text-white overflow-hidden flex flex-col relative font-sans select-none touch-none">
+    <div className="h-screen bg-[#0a0a0a] text-white overflow-hidden flex flex-col relative font-sans select-none">
       {/* Header */}
-      <header className="px-6 py-4 flex justify-between items-center z-10 shrink-0 border-b border-white/5 bg-black/50 backdrop-blur-md">
+      <header className="px-6 py-5 flex justify-between items-center z-[100] shrink-0 border-b border-white/5 bg-black/40 backdrop-blur-2xl">
         <div className="flex items-center gap-4">
           <button 
             onClick={() => setShowFavorites(true)}
-            className="relative p-2 bg-white/10 rounded-xl"
+            className="relative p-3 bg-white/10 rounded-2xl hover:bg-white/20 transition-colors"
           >
-            <Heart size={20} fill={session.kept.length > 0 ? "white" : "none"} />
+            <Heart size={24} fill={session.kept.length > 0 ? "white" : "none"} className={session.kept.length > 0 ? "text-red-500" : ""} />
             {session.kept.length > 0 && (
-              <span className="absolute -top-1 -right-1 bg-purple-600 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">
+              <span className="absolute -top-1 -right-1 bg-red-500 text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-[#0a0a0a]">
                 {session.kept.length}
               </span>
             )}
           </button>
           <div className="flex flex-col">
-            <h1 className="text-sm font-black tracking-tighter opacity-50 uppercase">Culling Session</h1>
-            <p className="text-lg font-black tracking-tight leading-none">
-              {currentIndex} <span className="text-gray-600">/ {queue.length}</span>
+            <h1 className="text-[10px] font-black tracking-[0.2em] opacity-40 uppercase">Session Progress</h1>
+            <p className="text-xl font-black tracking-tighter leading-none flex items-baseline gap-1">
+              {currentIndex + 1} <span className="text-white/20 text-sm font-bold">/ {queue.length}</span>
             </p>
           </div>
         </div>
         
-        <div className="flex gap-2">
+        <div className="flex gap-3">
           <button 
             onClick={undo}
             disabled={history.length === 0 || exitDirection}
-            className="p-2 bg-white/5 rounded-xl disabled:opacity-20"
+            className="p-3 bg-white/5 rounded-2xl disabled:opacity-20 hover:bg-white/10 transition-colors"
+            title="Undo (Z)"
           >
-            <RotateCcw size={20} />
+            <RotateCcw size={22} />
           </button>
           <button 
             onClick={submit}
             disabled={submitting}
-            className="px-4 py-2 bg-white text-black rounded-xl font-black text-xs uppercase tracking-widest shadow-lg hover:scale-105 transition-transform"
+            className="px-6 py-3 bg-white text-black rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl hover:scale-105 active:scale-95 transition-all"
           >
             {submitting ? <Loader2 className="animate-spin" size={16} /> : "Finish"}
           </button>
         </div>
       </header>
 
-      {/* Card Stack */}
-      <div className="flex-1 relative flex items-center justify-center p-4">
+      {/* Main Card View */}
+      <div className="flex-1 relative flex items-center justify-center p-6 overflow-hidden">
         {currentIndex < queue.length ? (
-          <div className="relative w-full max-w-md aspect-[3/4]">
+          <div className="relative w-full max-w-[400px] h-full max-h-[600px] perspective-[1000px]">
+            {/* Background Card (Next) */}
             {nextImage && (
-              <div className="absolute inset-0 rounded-3xl bg-gray-800 scale-95 translate-y-4 opacity-40 shadow-2xl overflow-hidden">
-                <img src={nextImage.url} className="w-full h-full object-cover grayscale opacity-50" alt="" />
+              <div className="absolute inset-0 rounded-[2.5rem] bg-zinc-900 border border-white/5 scale-[0.9] translate-y-8 z-0 opacity-40 overflow-hidden shadow-2xl transition-all duration-500">
+                <img src={nextImage.url} className="w-full h-full object-cover grayscale opacity-20 blur-sm" alt="" />
               </div>
             )}
 
+            {/* Top Card */}
             <div 
               ref={cardRef}
+              onMouseDown={(e) => {
+                if (exitDirection || showFavorites) return;
+                startPos.current = { x: e.clientX, y: e.clientY };
+                setDrag({ x: 0, y: 0, active: true });
+                const handleMove = (ev) => {
+                   setDrag({ x: ev.clientX - startPos.current.x, y: ev.clientY - startPos.current.y, active: true });
+                };
+                const handleUp = (ev) => {
+                   window.removeEventListener('mousemove', handleMove);
+                   window.removeEventListener('mouseup', handleUp);
+                   const dx = ev.clientX - startPos.current.x;
+                   const dy = ev.clientY - startPos.current.y;
+                   const threshold = 120;
+                   if (Math.abs(dx) > threshold) {
+                      handleDecision(dx > 0 ? 'keep' : 'discard');
+                   } else if (dy < -threshold && Math.abs(dx) < threshold) {
+                      handleDecision('unsure');
+                   } else {
+                      setDrag({ x: 0, y: 0, active: false });
+                   }
+                };
+                window.addEventListener('mousemove', handleMove);
+                window.addEventListener('mouseup', handleUp);
+              }}
               onTouchStart={onTouchStart}
               onTouchMove={onTouchMove}
               onTouchEnd={onTouchEnd}
               style={getCardStyle()}
-              className="absolute inset-0 rounded-[2.5rem] bg-gray-900 shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col cursor-grab active:cursor-grabbing border border-white/10"
+              className="absolute inset-0 rounded-[3rem] bg-zinc-800 shadow-[0_30px_60px_-12px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col cursor-grab active:cursor-grabbing border border-white/10 touch-none"
             >
                <img 
                  src={currentImage.url} 
@@ -268,134 +307,149 @@ export default function CullView() {
                  alt="Review" 
                />
                
-               <button 
-                 onClick={(e) => { e.stopPropagation(); setLightboxImage(currentImage.url); }}
-                 className="absolute top-4 right-4 p-3 bg-black/40 rounded-full backdrop-blur-xl border border-white/10"
-               >
-                 <Maximize2 size={24} />
-               </button>
+               {/* Controls on Card */}
+               <div className="absolute top-6 left-6 right-6 flex justify-between items-start pointer-events-none">
+                  <div className="p-3 bg-black/40 rounded-full backdrop-blur-xl border border-white/10 opacity-60">
+                    <Info size={18} />
+                  </div>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); setLightboxImage(currentImage.url); }}
+                    className="p-4 bg-black/40 rounded-full backdrop-blur-xl border border-white/10 pointer-events-auto hover:bg-black/60 transition-colors"
+                  >
+                    <Maximize2 size={24} />
+                  </button>
+               </div>
 
-               {/* Swipe Hints */}
+               {/* Swipe Labels (Tinder Style) */}
                {drag.active && (
-                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-10">
-                    {drag.x > 80 && (
-                      <div className="bg-green-500 text-white px-8 py-4 rounded-3xl font-black text-4xl rotate-[-12deg] border-4 border-white shadow-2xl animate-in zoom-in duration-100">
-                        KEEP
+                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-10 z-[60]">
+                    {drag.x > 50 && (
+                      <div className="absolute top-12 left-8 border-4 border-green-500 text-green-500 px-6 py-2 rounded-xl font-black text-4xl rotate-[-15deg] uppercase shadow-2xl scale-110">
+                        Keep
                       </div>
                     )}
-                    {drag.x < -80 && (
-                      <div className="bg-red-500 text-white px-8 py-4 rounded-3xl font-black text-4xl rotate-[12deg] border-4 border-white shadow-2xl animate-in zoom-in duration-100">
-                        SKIP
+                    {drag.x < -50 && (
+                      <div className="absolute top-12 right-8 border-4 border-red-500 text-red-500 px-6 py-2 rounded-xl font-black text-4xl rotate-[15deg] uppercase shadow-2xl scale-110">
+                        Skip
                       </div>
                     )}
-                    {drag.y < -80 && Math.abs(drag.x) < 50 && (
-                      <div className="bg-gray-500 text-white px-8 py-4 rounded-3xl font-black text-4xl border-4 border-white shadow-2xl animate-in zoom-in duration-100">
-                        MAYBE
+                    {drag.y < -50 && Math.abs(drag.x) < 50 && (
+                      <div className="absolute bottom-20 border-4 border-zinc-400 text-zinc-400 px-6 py-2 rounded-xl font-black text-4xl uppercase shadow-2xl scale-110">
+                        Maybe
                       </div>
                     )}
                  </div>
                )}
+
+               {/* Grad Info */}
+               <div className="absolute bottom-0 inset-x-0 h-40 bg-gradient-to-t from-black via-black/40 to-transparent pointer-events-none flex flex-col justify-end p-8">
+                  <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">Image Key</span>
+                  <p className="text-sm text-white font-mono truncate opacity-60">{currentImage.key}</p>
+               </div>
             </div>
           </div>
         ) : (
-          <div className="text-center p-8 max-w-sm animate-in fade-in slide-in-from-bottom-10 duration-500">
-             <div className="bg-purple-600/20 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-8 border border-purple-500/50">
-                <CheckCircle size={48} className="text-purple-500" />
+          <div className="text-center p-10 max-w-sm animate-in fade-in slide-in-from-bottom-12 duration-700 bg-zinc-900/50 rounded-[3rem] border border-white/5 backdrop-blur-xl">
+             <div className="bg-purple-600/20 w-28 h-28 rounded-full flex items-center justify-center mx-auto mb-10 border border-purple-500/30">
+                <CheckCircle size={56} className="text-purple-500" />
              </div>
-             <h3 className="text-3xl font-black mb-4 tracking-tighter leading-tight text-white">READY TO SUBMIT?</h3>
-             <p className="text-gray-500 mb-10 text-lg leading-relaxed">
-               You've reviewed all photos. You can review your {session.kept.length} favorites before finishing.
+             <h3 className="text-4xl font-black mb-4 tracking-tighter italic uppercase text-white">All Caught Up!</h3>
+             <p className="text-gray-400 mb-12 text-lg leading-relaxed font-medium">
+               You've reviewed every photo in this session.
              </p>
              <div className="flex flex-col gap-4">
                <button 
                 onClick={() => setShowFavorites(true)}
-                className="w-full py-5 bg-white/5 border border-white/10 rounded-2xl font-black text-lg transition-all active:scale-95"
+                className="w-full py-6 bg-white/5 border border-white/10 rounded-[1.5rem] font-black text-lg transition-all hover:bg-white/10 active:scale-95"
                >
-                 Review Choices
+                 Review {session.kept.length} Choices
                </button>
                <button 
                  onClick={submit}
                  disabled={submitting}
-                 className="w-full py-5 bg-purple-600 text-white rounded-2xl font-black text-lg shadow-[0_10px_30px_rgba(147,51,234,0.3)] transition-all active:scale-95 flex items-center justify-center gap-3"
+                 className="w-full py-6 bg-purple-600 text-white rounded-[1.5rem] font-black text-xl shadow-[0_15px_40px_rgba(147,51,234,0.4)] transition-all hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-3 uppercase tracking-tighter italic"
                >
-                 {submitting ? <Loader2 className="animate-spin" /> : "Finish & Send"}
+                 {submitting ? <Loader2 className="animate-spin" /> : "Submit To Studio"}
                </button>
              </div>
           </div>
         )}
       </div>
 
-      {/* Controls */}
+      {/* Bottom Fixed Controls */}
       {currentIndex < queue.length && (
-        <div className="px-10 pb-12 pt-6 flex justify-between items-center z-10 shrink-0 max-w-md mx-auto w-full">
+        <div className="px-10 pb-16 pt-8 flex justify-center items-center z-[100] gap-8 shrink-0">
           <button 
             onClick={() => handleDecision('discard')}
             disabled={exitDirection}
-            className="w-20 h-20 bg-red-500/10 border-2 border-red-500/50 text-red-500 rounded-full flex items-center justify-center shadow-lg hover:bg-red-500 hover:text-white transition-all active:scale-90"
+            className="w-20 h-20 bg-zinc-900 border border-white/10 text-red-500 rounded-full flex items-center justify-center shadow-2xl hover:scale-110 active:scale-90 transition-all group"
           >
-            <X size={36} />
+            <X size={40} className="group-hover:rotate-90 transition-transform duration-300" />
           </button>
           
           <button 
             onClick={() => handleDecision('unsure')}
             disabled={exitDirection}
-            className="w-14 h-14 bg-white/5 border border-white/10 text-gray-400 rounded-full flex items-center justify-center shadow-lg transition-all active:scale-90"
-            title="Maybe"
+            className="w-16 h-16 bg-zinc-900 border border-white/10 text-zinc-400 rounded-full flex items-center justify-center shadow-xl hover:scale-110 active:scale-90 transition-all"
           >
-            <Info size={28} />
+            <Info size={30} />
           </button>
 
           <button 
             onClick={() => handleDecision('keep')}
             disabled={exitDirection}
-            className="w-20 h-20 bg-green-500 border-2 border-green-400 text-white rounded-full flex items-center justify-center shadow-[0_15px_35px_rgba(34,197,94,0.3)] hover:scale-110 transition-all active:scale-90"
+            className="w-20 h-20 bg-zinc-900 border border-white/10 text-green-500 rounded-full flex items-center justify-center shadow-2xl hover:scale-110 active:scale-90 transition-all group"
           >
-            <Heart size={36} fill="white" />
+            <Heart size={40} className="group-hover:scale-125 transition-transform duration-300" />
           </button>
         </div>
       )}
 
-      {/* Favorites Modal (The "Selected Photos" view) */}
+      {/* Favorites Modal */}
       {showFavorites && (
-        <div className="fixed inset-0 z-[60] bg-black/95 backdrop-blur-2xl flex flex-col animate-in fade-in slide-in-from-bottom-10 duration-300">
-          <header className="px-6 py-6 flex justify-between items-center border-b border-white/10">
-             <div className="flex items-center gap-3">
-                <Heart fill="white" size={24} className="text-purple-500" />
-                <h2 className="text-2xl font-black tracking-tighter uppercase">My Favorites</h2>
-                <span className="text-gray-500 font-mono text-sm">({session.kept.length})</span>
+        <div className="fixed inset-0 z-[200] bg-black flex flex-col animate-in fade-in duration-300 font-sans">
+          <header className="px-8 py-8 flex justify-between items-center border-b border-white/10 bg-black/50 backdrop-blur-3xl">
+             <div className="flex items-center gap-4">
+                <div className="bg-red-500/10 p-3 rounded-2xl">
+                  <Heart fill="currentColor" size={28} className="text-red-500" />
+                </div>
+                <div className="flex flex-col">
+                  <h2 className="text-3xl font-black tracking-tighter uppercase italic leading-none">Your Picks</h2>
+                  <span className="text-white/40 font-black text-xs tracking-widest mt-1 uppercase">({session.kept.length} Selected)</span>
+                </div>
              </div>
              <button 
                onClick={() => setShowFavorites(false)}
-               className="p-3 bg-white/10 rounded-full"
+               className="p-4 bg-zinc-900 rounded-full hover:bg-zinc-800 transition-colors"
              >
-               <ChevronDown size={28} />
+               <ChevronDown size={32} />
              </button>
           </header>
           
-          <div className="flex-1 overflow-y-auto p-4 md:p-8">
+          <div className="flex-1 overflow-y-auto p-6 md:p-12 bg-black">
             {session.kept.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-gray-500">
-                <Heart size={64} className="mb-4 opacity-10" />
-                <p className="text-xl font-bold">No photos selected yet.</p>
-                <p className="text-sm mt-2">Swipe right on photos to add them here.</p>
+              <div className="h-full flex flex-col items-center justify-center text-white/20">
+                <Heart size={100} className="mb-6 opacity-5" />
+                <p className="text-2xl font-black italic uppercase tracking-tight">Empty List</p>
+                <p className="text-sm mt-2 font-bold tracking-widest opacity-40 uppercase">Swipe right to select favorites</p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                {session.kept.map((imagePath) => (
-                  <div key={imagePath} className="relative aspect-[3/4] rounded-2xl overflow-hidden group shadow-xl border border-white/5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-6">
+                {session.kept.map((key) => (
+                  <div key={key} className="relative aspect-[3/4] rounded-[2rem] overflow-hidden group shadow-2xl border border-white/5">
                     <img 
-                      src={`/api/pixamatch/${imagePath}`} // Use Minio proxy URL (needs verification of endpoint)
+                      src={getUrlForKey(key)}
                       alt="Selected"
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
+                    <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center p-6">
                        <button 
                          onClick={() => {
-                           setSession(prev => ({ ...prev, kept: prev.kept.filter(k => k !== imagePath) }));
+                           setSession(prev => ({ ...prev, kept: prev.kept.filter(k => k !== key) }));
                          }}
-                         className="flex items-center gap-2 bg-red-600/90 text-white px-3 py-2 rounded-xl text-xs font-bold"
+                         className="w-full flex items-center justify-center gap-3 bg-red-600 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl hover:bg-red-500 transition-colors"
                        >
-                         <Trash2 size={14} /> Remove
+                         <Trash2 size={16} /> Remove
                        </button>
                     </div>
                   </div>
@@ -404,12 +458,12 @@ export default function CullView() {
             )}
           </div>
           
-          <footer className="p-6 border-t border-white/10 bg-black">
+          <footer className="p-8 border-t border-white/10 bg-zinc-900/50 backdrop-blur-3xl">
              <button 
-               onClick={submit}
-               className="w-full py-5 bg-white text-black rounded-2xl font-black text-xl shadow-2xl transition-all active:scale-95"
+               onClick={() => { setShowFavorites(false); submit(); }}
+               className="w-full py-7 bg-white text-black rounded-[2rem] font-black text-2xl shadow-[0_20px_50px_rgba(255,255,255,0.1)] transition-all hover:scale-[1.01] active:scale-95 uppercase italic tracking-tighter"
              >
-               Finalize & Submit Choices
+               Finalize & Submit
              </button>
           </footer>
         </div>
@@ -418,12 +472,12 @@ export default function CullView() {
       {/* Fullscreen Lightbox */}
       {lightboxImage && (
         <div 
-          className="fixed inset-0 z-[100] bg-black flex items-center justify-center p-2 animate-in fade-in duration-200"
+          className="fixed inset-0 z-[300] bg-black flex items-center justify-center p-4 animate-in fade-in duration-300 cursor-zoom-out"
           onClick={() => setLightboxImage(null)}
         >
-          <img src={lightboxImage} className="max-w-full max-h-full object-contain rounded-lg" alt="Fullscreen" />
-          <button className="absolute top-6 right-6 p-4 bg-white/20 rounded-full backdrop-blur-xl border border-white/10">
-            <X size={28} />
+          <img src={lightboxImage} className="max-w-full max-h-full object-contain rounded-3xl shadow-[0_0_100px_rgba(0,0,0,0.9)]" alt="Fullscreen" />
+          <button className="absolute top-8 right-8 p-5 bg-white/10 rounded-full backdrop-blur-2xl border border-white/10 hover:bg-white/20 transition-colors">
+            <X size={32} />
           </button>
         </div>
       )}
