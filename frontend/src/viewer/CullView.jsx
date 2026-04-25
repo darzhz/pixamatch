@@ -81,7 +81,7 @@ export default function CullView() {
 
       // Sync immediately for better persistence
       syncDecisions([newDecision], nextIndex);
-    }, 300);
+    }, 400);
   }, [currentIndex, session, exitDirection]);
 
   const undo = () => {
@@ -189,15 +189,27 @@ export default function CullView() {
   const currentImage = queue[currentIndex];
   const nextImage = queue[currentIndex + 1];
 
-  const getCardStyle = () => {
+  const getCardStyle = (isTop) => {
+    if (!isTop) {
+      const isRevealing = exitDirection !== null;
+      return {
+        transform: isRevealing ? 'translate3d(0, 0, 0) scale(1)' : 'translate3d(0, 30px, 0) scale(0.9)',
+        opacity: isRevealing ? 1 : 0.4,
+        zIndex: 30,
+        filter: isRevealing ? 'grayscale(0) blur(0px)' : 'grayscale(0.5) blur(2px)',
+        transition: 'all 0.6s cubic-bezier(0.23, 1, 0.32, 1)'
+      };
+    }
+
     if (exitDirection) {
       const transform = {
         left: 'translate3d(-200%, 0, 0) rotate(-30deg)',
         right: 'translate3d(200%, 0, 0) rotate(30deg)',
         up: 'translate3d(0, -200%, 0)'
       }[exitDirection];
-      return { transform, transition: 'all 0.4s cubic-bezier(0.3, 0, 0.2, 1)', opacity: 0 };
+      return { transform, transition: 'all 0.4s cubic-bezier(0.3, 0, 0.2, 1)', opacity: 0, zIndex: 50 };
     }
+
     if (drag.active) {
       // Rotation increases as you drag away from center
       const rotation = drag.x * 0.05;
@@ -207,10 +219,12 @@ export default function CullView() {
         zIndex: 50
       };
     }
+
     return { 
-      transform: 'translate3d(0,0,0) rotate(0deg)', 
+      transform: 'translate3d(0,0,0) rotate(0deg) scale(1)', 
       transition: 'all 0.6s cubic-bezier(0.23, 1, 0.32, 1)',
-      zIndex: 40
+      zIndex: 40,
+      opacity: 1
     };
   };
 
@@ -261,92 +275,94 @@ export default function CullView() {
       <div className="flex-1 relative flex items-center justify-center p-6 overflow-hidden">
         {currentIndex < queue.length ? (
           <div className="relative w-full max-w-[400px] h-full max-h-[600px] perspective-[1000px]">
-            {/* Background Card (Next) */}
-            {nextImage && (
-              <div className="absolute inset-0 rounded-[2.5rem] bg-zinc-900 border border-white/5 scale-[0.9] translate-y-8 z-0 opacity-40 overflow-hidden shadow-2xl transition-all duration-500">
-                <img src={nextImage.url} className="w-full h-full object-cover grayscale opacity-20 blur-sm" alt="" />
-              </div>
-            )}
-
-            {/* Top Card */}
-            <div 
-              ref={cardRef}
-              onMouseDown={(e) => {
-                if (exitDirection || showFavorites) return;
-                startPos.current = { x: e.clientX, y: e.clientY };
-                setDrag({ x: 0, y: 0, active: true });
-                const handleMove = (ev) => {
-                   setDrag({ x: ev.clientX - startPos.current.x, y: ev.clientY - startPos.current.y, active: true });
-                };
-                const handleUp = (ev) => {
-                   window.removeEventListener('mousemove', handleMove);
-                   window.removeEventListener('mouseup', handleUp);
-                   const dx = ev.clientX - startPos.current.x;
-                   const dy = ev.clientY - startPos.current.y;
-                   const threshold = 120;
-                   if (Math.abs(dx) > threshold) {
-                      handleDecision(dx > 0 ? 'keep' : 'discard');
-                   } else if (dy < -threshold && Math.abs(dx) < threshold) {
-                      handleDecision('unsure');
-                   } else {
-                      setDrag({ x: 0, y: 0, active: false });
-                   }
-                };
-                window.addEventListener('mousemove', handleMove);
-                window.addEventListener('mouseup', handleUp);
-              }}
-              onTouchStart={onTouchStart}
-              onTouchMove={onTouchMove}
-              onTouchEnd={onTouchEnd}
-              style={getCardStyle()}
-              className="absolute inset-0 rounded-[3rem] bg-zinc-800 shadow-[0_30px_60px_-12px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col cursor-grab active:cursor-grabbing border border-white/10 touch-none"
-            >
-               <img 
-                 src={currentImage.url} 
-                 className="w-full h-full object-cover pointer-events-none" 
-                 alt="Review" 
-               />
-               
-               {/* Controls on Card */}
-               <div className="absolute top-6 left-6 right-6 flex justify-between items-start pointer-events-none">
-                  <div className="p-3 bg-black/40 rounded-full backdrop-blur-xl border border-white/10 opacity-60">
-                    <Info size={18} />
-                  </div>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); setLightboxImage(currentImage.url); }}
-                    className="p-4 bg-black/40 rounded-full backdrop-blur-xl border border-white/10 pointer-events-auto hover:bg-black/60 transition-colors"
-                  >
-                    <Maximize2 size={24} />
-                  </button>
-               </div>
-
-               {/* Swipe Labels (Tinder Style) */}
-               {drag.active && (
-                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-10 z-[60]">
-                    {drag.x > 50 && (
-                      <div className="absolute top-12 left-8 border-4 border-green-500 text-green-500 px-6 py-2 rounded-xl font-black text-4xl rotate-[-15deg] uppercase shadow-2xl scale-110">
-                        Keep
+            {[nextImage, currentImage].filter(Boolean).map((image, i, arr) => {
+              const isTop = i === arr.length - 1;
+              return (
+                <div 
+                  key={image.key}
+                  ref={isTop ? cardRef : null}
+                  onMouseDown={(e) => {
+                    if (!isTop || exitDirection || showFavorites) return;
+                    startPos.current = { x: e.clientX, y: e.clientY };
+                    setDrag({ x: 0, y: 0, active: true });
+                    const handleMove = (ev) => {
+                      setDrag({ x: ev.clientX - startPos.current.x, y: ev.clientY - startPos.current.y, active: true });
+                    };
+                    const handleUp = (ev) => {
+                      window.removeEventListener('mousemove', handleMove);
+                      window.removeEventListener('mouseup', handleUp);
+                      const dx = ev.clientX - startPos.current.x;
+                      const dy = ev.clientY - startPos.current.y;
+                      const threshold = 120;
+                      if (Math.abs(dx) > threshold) {
+                        handleDecision(dx > 0 ? 'keep' : 'discard');
+                      } else if (dy < -threshold && Math.abs(dx) < threshold) {
+                        handleDecision('unsure');
+                      } else {
+                        setDrag({ x: 0, y: 0, active: false });
+                      }
+                    };
+                    window.addEventListener('mousemove', handleMove);
+                    window.addEventListener('mouseup', handleUp);
+                  }}
+                  onTouchStart={isTop ? onTouchStart : undefined}
+                  onTouchMove={isTop ? onTouchMove : undefined}
+                  onTouchEnd={isTop ? onTouchEnd : undefined}
+                  style={getCardStyle(isTop)}
+                  className={`absolute inset-0 rounded-[3rem] overflow-hidden flex flex-col border border-white/10 shadow-2xl transition-all ${isTop ? 'bg-zinc-800 cursor-grab active:cursor-grabbing touch-none z-40' : 'bg-zinc-900 z-0'}`}
+                >
+                  <img 
+                    src={image.url} 
+                    className={`w-full h-full object-cover pointer-events-none transition-all duration-700 ${!isTop ? 'grayscale opacity-20 blur-sm' : ''}`} 
+                    alt="Review" 
+                  />
+                  
+                  {isTop && (
+                    <>
+                      {/* Controls on Card */}
+                      <div className="absolute top-6 left-6 right-6 flex justify-between items-start pointer-events-none">
+                          <div className="p-3 bg-black/40 rounded-full backdrop-blur-xl border border-white/10 opacity-60">
+                            <Info size={18} />
+                          </div>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setLightboxImage(image.url); }}
+                            className="p-4 bg-black/40 rounded-full backdrop-blur-xl border border-white/10 pointer-events-auto hover:bg-black/60 transition-colors"
+                          >
+                            <Maximize2 size={24} />
+                          </button>
                       </div>
-                    )}
-                    {drag.x < -50 && (
-                      <div className="absolute top-12 right-8 border-4 border-red-500 text-red-500 px-6 py-2 rounded-xl font-black text-4xl rotate-[15deg] uppercase shadow-2xl scale-110">
-                        Skip
-                      </div>
-                    )}
-                    {drag.y < -50 && Math.abs(drag.x) < 50 && (
-                      <div className="absolute bottom-20 border-4 border-zinc-400 text-zinc-400 px-6 py-2 rounded-xl font-black text-4xl uppercase shadow-2xl scale-110">
-                        Maybe
-                      </div>
-                    )}
-                 </div>
-               )}
 
-               {/* Grad Info */}
-               <div className="absolute bottom-0 inset-x-0 h-40 bg-gradient-to-t from-black via-black/40 to-transparent pointer-events-none flex flex-col justify-end p-8">
-                  <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">Image Key</span>
-                  <p className="text-sm text-white font-mono truncate opacity-60">{currentImage.key}</p>
-               </div>
-            </div>
+                      {/* Swipe Labels (Tinder Style) */}
+                      {drag.active && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none p-10 z-[60]">
+                            {drag.x > 50 && (
+                              <div className="absolute top-12 left-8 border-4 border-green-500 text-green-500 px-6 py-2 rounded-xl font-black text-4xl rotate-[-15deg] uppercase shadow-2xl scale-110">
+                                Keep
+                              </div>
+                            )}
+                            {drag.x < -50 && (
+                              <div className="absolute top-12 right-8 border-4 border-red-500 text-red-500 px-6 py-2 rounded-xl font-black text-4xl rotate-[15deg] uppercase shadow-2xl scale-110">
+                                Skip
+                              </div>
+                            )}
+                            {drag.y < -50 && Math.abs(drag.x) < 50 && (
+                              <div className="absolute bottom-20 border-4 border-zinc-400 text-zinc-400 px-6 py-2 rounded-xl font-black text-4xl uppercase shadow-2xl scale-110">
+                                Maybe
+                              </div>
+                            )}
+                        </div>
+                      )}
+
+                      {/* Grad Info */}
+                      <div className="absolute bottom-0 inset-x-0 h-40 bg-gradient-to-t from-black via-black/40 to-transparent pointer-events-none flex flex-col justify-end p-8">
+                          <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest mb-1">Image Key</span>
+                          <p className="text-sm text-white font-mono truncate opacity-60">{image.key}</p>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
         ) : (
           <div className="text-center p-10 max-w-sm animate-in fade-in slide-in-from-bottom-12 duration-700 bg-zinc-900/50 rounded-[3rem] border border-white/5 backdrop-blur-xl">
