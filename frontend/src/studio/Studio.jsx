@@ -92,6 +92,25 @@ export default function Studio() {
     }
   };
 
+  const deleteImage = async (key) => {
+    if (!confirm("Delete this image? It will be removed from storage and vector search.")) return;
+    try {
+      await axios.delete(`/api/baskets/${activeBasket.basket_id}/images`, {
+        params: { key }
+      });
+      setImages(prev => prev.filter(img => img.key !== key));
+      // Update local faces count estimate
+      if (activeBasket) {
+        setActiveBasket(prev => ({
+          ...prev,
+          image_count: Math.max(0, (prev.image_count || 0) - 1)
+        }));
+      }
+    } catch (e) {
+      alert("Error deleting image: " + e.message);
+    }
+  };
+
   const processImage = async (file) => {
     const shouldCompress = import.meta.env.VITE_COMPRESS_STUDIO !== 'false';
     if (!shouldCompress) return file;
@@ -449,7 +468,15 @@ export default function Studio() {
                               loading="lazy"
                               className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                             />
-                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors pointer-events-none" />
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                               <button 
+                                 onClick={() => deleteImage(img.key)}
+                                 className="p-3 bg-red-600 text-white rounded-full shadow-xl hover:bg-red-700 hover:scale-110 transition-all active:scale-95"
+                                 title="Delete Image"
+                               >
+                                  <Trash2 size={20} />
+                               </button>
+                            </div>
                           </div>
                         ))}
                       </div>

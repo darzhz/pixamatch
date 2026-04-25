@@ -30,6 +30,12 @@ class DatabaseClient:
                     )
                 )
             )
+            # Create payload index for basket_id to ensure fast and correct filtering
+            self.client.create_payload_index(
+                collection_name=self.collection_name,
+                field_name="basket_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
 
     def upsert_face(self, basket_id, image_path, vectors, bbox, quality_score):
         return self.upsert_faces_batch(basket_id, [{
@@ -90,7 +96,27 @@ class DatabaseClient:
                         match=models.MatchValue(value=basket_id)
                     )
                 ]
-            )
+            ),
+            wait=True
+        )
+
+    def delete_image(self, basket_id, image_path):
+        """Remove all points associated with a specific image in a basket"""
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="basket_id",
+                        match=models.MatchValue(value=basket_id)
+                    ),
+                    models.FieldCondition(
+                        key="image_path",
+                        match=models.MatchValue(value=image_path)
+                    )
+                ]
+            ),
+            wait=True
         )
 
 if __name__ == "__main__":

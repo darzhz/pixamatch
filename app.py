@@ -9,6 +9,8 @@ import redis
 import os
 import shutil
 import asyncio
+import zipfile
+import io
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from dotenv import load_dotenv
@@ -227,9 +229,30 @@ async def get_basket_images(basket_id: str, limit: int = 50, marker: Optional[st
     images = [{"key": k, "url": storage.get_signed_url(k)} for k in keys]
     return {"images": images, "next_marker": next_marker}
 
+@app.delete("/baskets/{basket_id}/images")
+async def delete_image(basket_id: str, key: str):
+    # Ensure key belongs to basket for security
+    if not key.startswith(f"{basket_id}/"):
+        raise HTTPException(status_code=403, detail="Unauthorized access to image")
+    
+    # 1. Delete from Vector DB (all faces in that image)
+    db.delete_image(basket_id, key)
+    
+    # 2. Delete from Storage
+    storage.delete_image(key)
+    
+    # 3. Update metadata count (optional, but good for UX)
+    info = meta_db.get_basket(basket_id)
+    if info:
+        # Note: image_count is an estimate in prog_data, but we update SQLite here
+        meta_db.update_stats(basket_id, max(0, info["image_count"] - 1), info["faces_indexed"])
+        
+    return {"status": "deleted"}
+
 @app.delete("/baskets/{basket_id}", status_code=204)
 async def delete_basket(basket_id: str):
     db.delete_basket(basket_id)
+    storage.delete_basket(basket_id)
     meta_db.delete_basket(basket_id)
     r.delete(f"basket:{basket_id}:name")
     r.delete(f"progress:{basket_id}")
@@ -344,6 +367,46 @@ async def list_folders(basket_id: str):
 async def mark_folder_read(folder_id: str):
     meta_db.mark_folder_read(folder_id)
     return {"status": "ok"}
+
+@app.get("/folders/{folder_id}/download")
+async def download_folder(folder_id: str):
+    folder = meta_db.get_folder(folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+        for path in folder["image_paths"]:
+            try:
+                # Fetch object from storage
+                res = storage.s3.get_object(Bucket=storage.bucket, Key=path)
+                zip_file.writestr(os.path.basename(path), res["Body"].read())
+            except Exception as e:
+                debug_log(f"Error adding {path} to zip: {str(e)}")
+    
+    zip_buffer.seek(0)
+    filename = f"{folder['name'].replace(' ', '_')}.zip"
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/x-zip-compressed",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+@app.get("/folders/{folder_id}/list")
+async def download_folder_list(folder_id: str):
+    folder = meta_db.get_folder(folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    # Just image keys
+    content = "\n".join(folder["image_paths"])
+    buffer = io.BytesIO(content.encode("utf-8"))
+    filename = f"{folder['name'].replace(' ', '_')}_list.txt"
+    return StreamingResponse(
+        buffer,
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 if __name__ == "__main__":
     import uvicorn

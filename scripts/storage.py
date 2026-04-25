@@ -79,6 +79,24 @@ class StorageClient:
         
         return keys, next_marker
 
+    def delete_basket(self, basket_id):
+        """Purge all objects in the bucket with the prefix basket_id/"""
+        # S3 delete_objects can handle up to 1000 keys at once
+        paginator = self.s3.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=self.bucket, Prefix=f"{basket_id}/")
+        
+        for page in pages:
+            if 'Contents' in page:
+                delete_keys = [{'Key': obj['Key']} for obj in page['Contents']]
+                self.s3.delete_objects(Bucket=self.bucket, Delete={'Objects': delete_keys})
+        
+        return True
+
+    def delete_image(self, key):
+        """Remove a single image from storage"""
+        self.s3.delete_object(Bucket=self.bucket, Key=key)
+        return True
+
 if __name__ == "__main__":
     # Quick test
     client = StorageClient()

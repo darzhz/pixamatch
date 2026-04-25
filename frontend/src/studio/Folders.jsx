@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Folder, Clock, CheckCircle, ExternalLink, Download, Loader2 } from 'lucide-react';
+import { Folder, Clock, CheckCircle, ExternalLink, Download, Loader2, FileText, FileArchive } from 'lucide-react';
 
 export default function Folders({ basketId }) {
   const [folders, setFolders] = useState([]);
@@ -28,6 +28,18 @@ export default function Folders({ basketId }) {
     } catch (e) {
       console.error("Error marking folder as read", e);
     }
+  };
+
+  const downloadZip = (folderId, e) => {
+    e.stopPropagation();
+    markRead(folderId);
+    window.open(`/api/folders/${folderId}/download`, '_blank');
+  };
+
+  const downloadList = (folderId, e) => {
+    e.stopPropagation();
+    markRead(folderId);
+    window.open(`/api/folders/${folderId}/list`, '_blank');
   };
 
   if (loading) return <Loader2 className="animate-spin mx-auto mt-10" />;
@@ -89,11 +101,19 @@ export default function Folders({ basketId }) {
               <div className="flex items-center justify-between pt-4 border-t border-gray-50">
                 <span className="text-xs font-bold text-gray-500">{folder.image_paths.length} Photos</span>
                 <div className="flex gap-2">
-                   <button className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-purple-600 transition-colors" title="Download List">
-                      <Download size={16} />
+                   <button 
+                     onClick={(e) => downloadList(folder.id, e)}
+                     className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-purple-600 transition-colors flex items-center gap-1 text-[10px] font-bold uppercase" 
+                     title="Download Filenames (TXT)"
+                   >
+                      <FileText size={16} /> List
                    </button>
-                   <button className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-purple-600 transition-colors" title="Open Pipeline">
-                      <ExternalLink size={16} />
+                   <button 
+                     onClick={(e) => downloadZip(folder.id, e)}
+                     className="p-2 bg-purple-50 hover:bg-purple-100 rounded-lg text-purple-600 transition-colors flex items-center gap-1 text-[10px] font-bold uppercase" 
+                     title="Download Photos (ZIP)"
+                   >
+                      <FileArchive size={16} /> ZIP
                    </button>
                 </div>
               </div>

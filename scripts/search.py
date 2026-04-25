@@ -1,16 +1,6 @@
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
-from .processor import FaceProcessor
-from .database import DatabaseClient
-from .storage import StorageClient
-from .logger import debug_log, timeit
-from qdrant_client.http import models
-import os
-
-import cv2
-import numpy as np
-from PIL import Image, ImageOps
 from .processor import FaceProcessor, REFERENCE_POINTS
 from .database import DatabaseClient
 from .storage import StorageClient
@@ -210,6 +200,11 @@ class SearchEngine:
             return np.dot(v1_arr, v2_arr) / norm
                 
         for cand in full_candidates:
+            # CRITICAL: Verify basket_id to prevent cross-basket leakage
+            if cand.payload.get("basket_id") != basket_id:
+                debug_log(f"WARNING: Cross-basket leakage detected! Candidate {cand.id} belongs to {cand.payload.get('basket_id')} but searched in {basket_id}")
+                continue
+
             vectors = cand.vector
             if not isinstance(vectors, dict): continue
 

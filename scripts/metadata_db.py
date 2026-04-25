@@ -124,6 +124,23 @@ class MetadataDB:
             "created_at": r[4]
         } for r in rows]
 
+    def get_folder(self, folder_id):
+        import json
+        conn = self._get_conn()
+        c = conn.cursor()
+        c.execute("SELECT id, name, image_paths, is_new, created_at FROM folders WHERE id = ?", (folder_id,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {
+                "id": row[0],
+                "name": row[1],
+                "image_paths": json.loads(row[2]),
+                "is_new": bool(row[3]),
+                "created_at": row[4]
+            }
+        return None
+
     def mark_folder_read(self, folder_id):
         conn = self._get_conn()
         c = conn.cursor()

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Heart, X, RotateCcw, Maximize2, CheckCircle, Info, Loader2, List, Trash2, ChevronDown } from 'lucide-react';
@@ -9,7 +9,7 @@ export default function CullView() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [decisions, setDecisions] = useState([]);
+  const [_decisions, setDecisions] = useState([]);
   const [history, setHistory] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [showFinished, setShowFinished] = useState(false);
@@ -177,10 +177,10 @@ export default function CullView() {
         Your selections have been sent to the photographer.
       </p>
       <button 
-        onClick={() => navigate('/')}
+        onClick={() => navigate(`/find/${basket_id}`)}
         className="px-12 py-5 bg-white text-black rounded-[2rem] font-black shadow-2xl hover:scale-105 active:scale-95 transition-all text-xl"
       >
-        Return to Studio
+        Return to search 
       </button>
     </div>
   );
